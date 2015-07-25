@@ -20,6 +20,8 @@
   */
   
 #include <avr/eeprom.h>
+#include <avr/power.h>
+#include <avr/wdt.h>
 
 #define GPS_LED 6
 #define LOCK_LED 7
@@ -59,11 +61,10 @@ volatile unsigned char lock;
 // edge of the clock pin, and CS must be held low the
 // whole time. The output voltage will slew on the rising
 // edge of CS. The minimum time between clock transition
-// is on the order of some number of nanoseconds, so
-// delaying one microsecond is more than glacial.
+// is faster than the maximum clock speed of an ATMega328,
+// so we don't need to perform any delays.
 static void writeDacValue(unsigned int value) {
   digitalWrite(DAC_CLK, HIGH);
-  delayMicroseconds(1); // our DAC is quite fast
   digitalWrite(DAC_CS, LOW);
   digitalWrite(DAC_DO, LOW);
   // we're going to write a bunch of zeros. The first six are just
@@ -71,16 +72,12 @@ static void writeDacValue(unsigned int value) {
   // always zero.
   for(int i = 0; i < 8; i++) {
     digitalWrite(DAC_CLK, LOW);
-    delayMicroseconds(1);
     digitalWrite(DAC_CLK, HIGH);
-    delayMicroseconds(1);
   }
   for(int i = 15; i >= 0; i--) {
     digitalWrite(DAC_DO, ((value >> i) & 0x1)?HIGH:LOW);
     digitalWrite(DAC_CLK, LOW);
-    delayMicroseconds(1);
     digitalWrite(DAC_CLK, HIGH);
-    delayMicroseconds(1);
   }
   digitalWrite(DAC_CS, HIGH); // And we're done.
 }
@@ -173,6 +170,14 @@ static inline void handleGPS() {
 }
 
 void setup() {
+  // This must be done as early as possible to prevent the watchdog from biting during reset.
+  MCUSR = 0;
+  wdt_enable(WDTO_500MS);
+  
+  ADCSRA = 0; // kill the ADC
+  power_adc_disable();
+  power_timer0_disable(); // note that millis() and delay() won't work
+  power_timer2_disable();
   Serial.begin(9600);
   Serial.setTimeout(10); // at 9600 bps, we should never have to wait >1 ms
   pinMode(PPS_PIN, INPUT);
@@ -208,6 +213,9 @@ void setup() {
 void loop() {
   static unsigned long last_second;
   static unsigned long seconds_since_last_flash_update = 0;
+  
+  // Pet the dog
+  wdt_reset();
   
   // first, service the serial port.
   while(Serial.available() > 0) {
