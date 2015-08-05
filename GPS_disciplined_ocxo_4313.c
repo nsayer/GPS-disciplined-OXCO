@@ -55,13 +55,13 @@
 #define NOMINAL_CLOCK (10000000L)
 
 // How many samples do we keep in our rolling window?
-#define SAMPLE_COUNT (20)
+#define SAMPLE_COUNT (10)
 // How many seconds is one sample? This shouldn't be longer
 // than 5 minutes for two reasons: 1. The time counter is only 32 bits,
 // and will roll over after ~400 seconds at 10 MHz. 2. At a maximum potential
 // error of 10 ppm, that's +/- 30,000 counts, and the range of an int
 // is +/-32,768.
-#define SAMPLE_SECONDS (25)
+#define SAMPLE_SECONDS (50)
 // The measurement granularity is 10^9/(NOMINAL_CLOCK * SAMPLE_SECONDS * SAMPLE_COUNT)
 
 #define SERIAL_BAUD (9600)
@@ -151,6 +151,7 @@ ISR(TIMER1_CAPT_vect) {
   } else if (valid_samples < SAMPLE_COUNT) {
     sample_buffer[(unsigned char)valid_samples++] = delta;
   } else {
+    valid_samples = SAMPLE_COUNT; // it's not ever allowed to be higher than SAMPLE_COUNT.
     for(int i = 0; i < SAMPLE_COUNT - 1; i++) {
       sample_buffer[i] = sample_buffer[i + 1];
     }
