@@ -357,7 +357,7 @@ void main() {
 #endif
   
     // Claim success if the total drift is under control
-    // Each count is 0.25 ppb, but you have to add one
+    // Each count is 0.2 ppb, but you have to add one
     // to round up.
     if (abs(sample_drift) < 250) { // 50 ppb
       if (abs(sample_drift) < 25) { // 5 ppb
