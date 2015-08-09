@@ -133,7 +133,7 @@ ISR(TIMER1_OVF_vect) {
 ISR(TIMER1_CAPT_vect) {
   static unsigned long last_timer_val;
   // Do this quickly!
-  unsigned long timer_val = (((unsigned long)timer_hibits) << 16) | TCNT1;
+  unsigned long timer_val = (((unsigned long)timer_hibits) << 16) | ICR1;
   if (gps_status == 0) {
     // at least keep track of the beginning of the second.
     last_timer_val = timer_val;
