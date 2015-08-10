@@ -305,7 +305,7 @@ void main() {
   TCCR1A = 0; // Normal mode
   TCCR1B = _BV(ICES1) | _BV(CS10); // No noise reduction, rising edge capture, no pre-scale.
   TIMSK = _BV(ICIE1) | _BV(TOIE1); // Interrupt on overflow and capture
-  ACSR = 0; // in particular, turn off ACIC so that ICP1/PB0 does the capturing.  
+  ACSR = _BV(ACD); // also, turn off ACIC so that ICP1/PB0 does the capturing.
   TCNT1 = 0; // clear the counter.
   timer_hibits = 0;
 
