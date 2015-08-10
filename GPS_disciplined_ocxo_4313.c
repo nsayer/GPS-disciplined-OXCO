@@ -402,10 +402,10 @@ void main() {
       tx_str(buf);
     }
 #endif
- 
+
     // Only write to EEPROM when we're *exactly* dialed in, and
-    // our trim value differs from the recorded one "significantly."
-    if (sample_drift == 0 && abs(eeprom_read_word(EE_TRIM_LOC) - trim_value) > EE_UPDATE_OFFSET) {
+    // our trim value differs from the recorded one "significantly." 
+    if (trim_value == 0 && sample_drift == 0 && abs(eeprom_read_word(EE_TRIM_LOC) - trim_value) > EE_UPDATE_OFFSET) {
       eeprom_write_word(EE_TRIM_LOC, trim_value);
     }
   }
