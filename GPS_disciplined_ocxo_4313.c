@@ -49,7 +49,7 @@
 #define EE_TRIM_LOC ((uint16_t*)0)
 // If the stored EEPROM trim value differs by this much from the present value,
 // then update it
-#define EE_UPDATE_OFFSET (20)
+#define EE_UPDATE_OFFSET (10)
 
 // 10 MHz
 #define NOMINAL_CLOCK (10000000L)
@@ -61,7 +61,7 @@
 // and will roll over after ~400 seconds at 10 MHz. 2. At a maximum potential
 // error of 10 ppm, that's +/- 30,000 counts, and the range of an int
 // is +/-32,768.
-#define SAMPLE_SECONDS (50)
+#define SAMPLE_SECONDS (100)
 // The measurement granularity is 10^9/(NOMINAL_CLOCK * SAMPLE_SECONDS * SAMPLE_COUNT)
 
 #define SERIAL_BAUD (9600)
@@ -367,12 +367,12 @@ void main() {
 #endif
  
     // If the sample buffer is full, claim success if the total drift is under control
-    // Each count is 0.2 ppb, but you have to add one to round up.
+    // Each count is 0.1 ppb, but you have to add one to round up.
     if (valid_samples < SAMPLE_COUNT) {
       lock = 0;
-    } else if (abs(sample_drift) < 250) { // 50 ppb
-      if (abs(sample_drift) < 25) { // 5 ppb
-        if (abs(sample_drift) < 5) // 1 ppb
+    } else if (abs(sample_drift) < 500) { // 50 ppb
+      if (abs(sample_drift) < 50) { // 5 ppb
+        if (abs(sample_drift) < 10) // 1 ppb
           lock = 5; // best
         else
           lock = 2; // better 
@@ -397,15 +397,15 @@ void main() {
       if (latest_sample != 0) {
         trim_value += (latest_sample<0)?1:-1;
       }
-    } else if (abs(latest_sample) < 5000) {
+    } else if (abs(latest_sample) < 500) {
       // Try and guestimate from the sample drift how hard to hit the
       // oscillator. Each DAC count value is worth around 0.4 ppb, and
-      // each error step is 2 ppb. But we want to under-adjust slightly
+      // each error step is 1 ppb. But we want to under-adjust slightly
       // to avoid oscillation. So let's call it 4 DAC counts per error unit.
-      trim_value -= latest_sample * 4;
+      trim_value -= latest_sample * 2;
     } else {
       // WTF? Nothing makes sense anymore. Give it a hard shove.
-      trim_value += (latest_sample < 0)?2000:-2000;
+      trim_value += (latest_sample < 0)?1000:-1000;
     }
     writeDacValue(trim_value);
 
@@ -424,7 +424,7 @@ void main() {
 
     // Only write to EEPROM when we're *exactly* dialed in, and
     // our trim value differs from the recorded one "significantly." 
-    if (trim_value == 0 && sample_drift == 0 && abs(eeprom_read_word(EE_TRIM_LOC) - trim_value) > EE_UPDATE_OFFSET) {
+    if (latest_sample == 0 && sample_drift == 0 && abs(eeprom_read_word(EE_TRIM_LOC) - trim_value) > EE_UPDATE_OFFSET) {
       eeprom_write_word(EE_TRIM_LOC, trim_value);
     }
   }
