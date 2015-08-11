@@ -354,7 +354,7 @@ void main() {
     for(int i = 0; i < valid_samples; i++) {
       sample_drift += sample_buffer[i];
 #ifdef DEBUG
-      char buf[14];
+      char buf[8];
       tx_pstr(PSTR("SB="));
       itoa(sample_buffer[i], buf, 10);
       tx_str(buf);
@@ -411,7 +411,7 @@ void main() {
 
 #ifdef DEBUG
     {
-      char buf[16];
+      char buf[8];
       tx_pstr(PSTR("TV="));
       itoa(trim_value, buf, 16);
       tx_str(buf);
