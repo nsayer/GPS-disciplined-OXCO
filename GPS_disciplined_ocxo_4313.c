@@ -189,6 +189,11 @@ static inline void tx_char(const char c) {
   UDR = c;
 }
 
+static inline void tx_pstr(const char *buf) {
+  for(int i = 0; i < strlen_P(buf); i++)
+    tx_char(pgm_read_byte(&(buf[i])));
+}
+
 static inline void tx_str(const char *buf) {
   for(int i = 0; i < strlen(buf); i++)
     tx_char(buf[i]);
@@ -317,6 +322,10 @@ void main() {
 
   sei();
 
+#ifdef DEBUG
+  tx_pstr(PSTR("START\r\n"));
+#endif
+
   while(1) {
     static unsigned long last_second;
   
@@ -336,8 +345,6 @@ void main() {
         // lock == 0, turn off the LED.
         LED_PORT &= ~LOCK_LED;
     }
-    // If the GPS sample buffer isn't full, we're done.
-    if (valid_samples < SAMPLE_COUNT) continue;
     // If we haven't had a PPS event since we were last here, we're done.
     if (last_second == pps_count) continue;
     last_second = pps_count;
@@ -348,19 +355,22 @@ void main() {
       sample_drift += sample_buffer[i];
 #ifdef DEBUG
       char buf[14];
-      snprintf(buf, sizeof(buf), "SB=%d ", sample_buffer[i]);
+      tx_pstr(PSTR("SB="));
+      itoa(sample_buffer[i], buf, 10);
       tx_str(buf);
+      tx_char(' ');
 #endif
     }
 #ifdef DEBUG
-    tx_char('\r');
-    tx_char('\n');
+    if (valid_samples > 0)
+      tx_pstr(PSTR("\r\n"));
 #endif
-  
-    // Claim success if the total drift is under control
-    // Each count is 0.2 ppb, but you have to add one
-    // to round up.
-    if (abs(sample_drift) < 250) { // 50 ppb
+ 
+    // If the sample buffer is full, claim success if the total drift is under control
+    // Each count is 0.2 ppb, but you have to add one to round up.
+    if (valid_samples < SAMPLE_COUNT) {
+      lock = 0;
+    } else if (abs(sample_drift) < 250) { // 50 ppb
       if (abs(sample_drift) < 25) { // 5 ppb
         if (abs(sample_drift) < 5) // 1 ppb
           lock = 5; // best
@@ -371,35 +381,44 @@ void main() {
     } else
       lock = 0; // bad
 
-    if (abs(sample_drift) == 0) {
+    // If we don't have at least one sample yet, we're done.
+    if (valid_samples <= 0) continue;
+
+    // What we actually do to the oscillator depends only
+    // on the most recent sample. The sample window is only
+    // for user feedback
+    int latest_sample = sample_buffer[valid_samples - 1];
+    
+    if (latest_sample == 0) {
       // WOO HOO! Nothing to do!
-    } else if (abs(sample_drift) < 20) {
+    } else if (abs(latest_sample) < 4) {
       // When we're close in, just *nudge* the clock one unit at a time
       // but only using the most recent error delta.
-      int latest_delta = sample_buffer[valid_samples - 1];
-      if (latest_delta != 0) {
-        trim_value += (latest_delta<0)?1:-1;
+      if (latest_sample != 0) {
+        trim_value += (latest_sample<0)?1:-1;
       }
-    } else if (abs(sample_drift) < 1000) {
+    } else if (abs(latest_sample) < 5000) {
       // Try and guestimate from the sample drift how hard to hit the
-      // oscillator. Each DAC count value is worth around 0.2 ppb, and
-      // each error step is 0.2 ppb. But we want to under-adjust because
-      // it'll take 10 samples to average out the impact, so let's call it
-      // 0.05 DAC units per error.
-      trim_value -= sample_drift / 20;
+      // oscillator. Each DAC count value is worth around 0.4 ppb, and
+      // each error step is 2 ppb. But we want to under-adjust slightly
+      // to avoid oscillation. So let's call it 4 DAC counts per error unit.
+      trim_value -= latest_sample * 4;
     } else {
       // WTF? Nothing makes sense anymore. Give it a hard shove.
-      trim_value += (sample_drift < 0)?100:-100;
+      trim_value += (latest_sample < 0)?2000:-2000;
     }
     writeDacValue(trim_value);
 
 #ifdef DEBUG
     {
       char buf[16];
-      snprintf(buf, sizeof(buf), "TV=%04x\r\n", trim_value);
+      tx_pstr(PSTR("TV="));
+      itoa(trim_value, buf, 16);
       tx_str(buf);
-      snprintf(buf, sizeof(buf), "ER=%d\r\n", sample_drift);
+      tx_pstr(PSTR("\r\nER="));
+      itoa(sample_drift, buf, 10);
       tx_str(buf);
+      tx_pstr(PSTR("\r\n"));
     }
 #endif
 
