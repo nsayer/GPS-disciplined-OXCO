@@ -333,18 +333,17 @@ void main() {
     wdt_reset();
   
     // next, blink the LOCK LED if we're locked so people know we're alive
-    if (lock) {
-      // 152 is 10 MHz / 65536 - timer_hibits frequency
-      unsigned char blink_speed = 152 / lock; // better lock -> faster blink
-      unsigned char blink_on = (timer_hibits % (blink_speed * 2)) > blink_speed; // 50% duty cycle
-      if (blink_on)
-        LED_PORT |= LOCK_LED;
-      else
-        LED_PORT &= ~LOCK_LED;
-    } else {
-        // lock == 0, turn off the LED.
-        LED_PORT &= ~LOCK_LED;
-    }
+    // 152 is 10 MHz / 65536 - timer_hibits frequency
+    // Divide each second into 10 spots. The even numbered ones will always
+    // be "off", and the odd numbered ones will count the value of "lock".
+    // so a single-blink, double-blink or triple-blink.
+    unsigned char blink_pos = timer_hibits % (NOMINAL_CLOCK / 65536);
+    blink_pos = (10 * blink_pos) / (NOMINAL_CLOCK / 65536);
+    if (blink_pos % 2 != 0 && blink_pos < lock * 2)
+      LED_PORT |= LOCK_LED;
+    else
+      LED_PORT &= ~LOCK_LED;
+
     // If we haven't had a PPS event since we were last here, we're done.
     if (last_second == pps_count) continue;
     last_second = pps_count;
@@ -373,7 +372,7 @@ void main() {
     } else if (abs(sample_drift) < 500) { // 50 ppb
       if (abs(sample_drift) < 50) { // 5 ppb
         if (abs(sample_drift) < 10) // 1 ppb
-          lock = 5; // best
+          lock = 3; // best
         else
           lock = 2; // better 
       } else
@@ -424,7 +423,7 @@ void main() {
 
     // Only write to EEPROM when we're *exactly* dialed in, and
     // our trim value differs from the recorded one "significantly." 
-    if (latest_sample == 0 && sample_drift == 0 && abs(eeprom_read_word(EE_TRIM_LOC) - trim_value) > EE_UPDATE_OFFSET) {
+    if (latest_sample == 0 && abs(eeprom_read_word(EE_TRIM_LOC) - trim_value) > EE_UPDATE_OFFSET) {
       eeprom_write_word(EE_TRIM_LOC, trim_value);
     }
   }
