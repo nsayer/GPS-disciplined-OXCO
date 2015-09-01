@@ -32,11 +32,35 @@
 #include <avr/interrupt.h>
 #include <avr/pgmspace.h>
 
+/************************************************
+ *
+ * OPTIONS
+ *
+ */
 //#define DEBUG
 
+// Comment this out for an FLL instead of a PLL. See the readme for what this means.
+//#define PLL
+
+#ifdef PLL
+// the PI controller factors. These are as of yet untuned guesses. They represent
+// values 100 times higher than they are. That is, imagine moving the decimal point two
+// spots left.
+#define K_P (100)
+#define K_I (005)
+#endif
+
+// 10 MHz.
+#define NOMINAL_CLOCK (10000000L)
+
+/************************************************/
+
+// our DAC is an inverter.
+#define DAC_SIGN (-1)
+
 #define LED_PORT PORTD
-#define GPS_LED _BV(PORTD5)
-#define LOCK_LED _BV(PORTD4)
+#define LED0 _BV(PORTD5)
+#define LED1 _BV(PORTD4)
 
 // We don't actually need to read this pin. It triggers a TIMER1_CAPT interrupt.
 //#define PPS_PIN _BV(PORTD6)
@@ -50,9 +74,6 @@
 // If the stored EEPROM trim value differs by this much from the present value,
 // then update it
 #define EE_UPDATE_OFFSET (10)
-
-// 10 MHz
-#define NOMINAL_CLOCK (10000000L)
 
 // How many samples do we keep in our rolling window?
 #define SAMPLE_COUNT (10)
@@ -80,6 +101,12 @@ volatile unsigned char gps_status;
 volatile unsigned char lock;
 volatile unsigned char rx_buf[RX_BUF_LEN];
 volatile unsigned char rx_str_len;
+#ifdef PLL
+volatile long total_error;
+volatile long trim_percent;
+#else
+volatile unsigned int trim_value;
+#endif
 
 // Write the given 16 bit value to our AD5061 DAC.
 // The data format is 6 bits of 0, then two bits of
@@ -247,19 +274,19 @@ static inline void handleGPS() {
     }
     ptr++; // skip over it
   }
-  char gps_now_valid = *ptr == '3';
-  if (gps_now_valid == gps_status) {
+  char gps_now_valid = (*ptr == '3')?1:0; // The ?: is just in case some compiler decides true is some value other than 1.
+  if (gps_now_valid == (gps_status & 1)) { // ignore other than the LSB - it's used by the debug firmware.
     //tx_char('4'); // diagnostic
     return; // no change in status
   }
   gps_status = gps_now_valid;
-  if (gps_status)
-    LED_PORT |= GPS_LED;
-  else {
-    LED_PORT &= ~GPS_LED;
-    LED_PORT &= ~LOCK_LED;
+  if (!gps_status) {
     valid_samples = -1; // and clear the sample buffer
     sample_window_pos = SAMPLE_SECONDS;
+#ifdef PLL
+    // Restart the error window for every GPS lock interval. We don't track drift during holdover.
+    total_error = 0;
+#endif
     lock = 0;
   }
   //tx_char('*'); // diagnostic
@@ -269,7 +296,7 @@ void main() {
   // This must be done as early as possible to prevent the watchdog from biting during reset.
   MCUSR = 0;
   wdt_enable(WDTO_500MS);
- 
+
   PRR |= _BV(PRTIM0) | _BV(PRUSI); 
 
   // set up the serial port
@@ -301,11 +328,20 @@ void main() {
   DDRB = _BV(DDB4) | _BV(DDB5) | _BV(DDB7);
   
   // Restore the DAC to the last written value
+#ifdef PLL
+  // declare it temporarily in ths context
+  {
+  unsigned int
+#endif
   trim_value = eeprom_read_word(EE_TRIM_LOC);
   if (trim_value == 0xffff) // uninitialized flash
     trim_value = 0x8000; // default to midrange
   writeDacValue(trim_value);
-  
+#ifdef PLL
+  trim_percent = (trim_value - 0x8000) * 100;
+  }
+#endif
+
   // Set up timer1
   TCCR1A = 0; // Normal mode
   TCCR1B = _BV(ICES1) | _BV(CS10); // No noise reduction, rising edge capture, no pre-scale.
@@ -319,6 +355,9 @@ void main() {
   valid_samples = -1;
   sample_window_pos = SAMPLE_SECONDS;
   rx_str_len = 0;
+#ifdef PLL
+  total_error = 0;
+#endif
 
   sei();
 
@@ -328,26 +367,51 @@ void main() {
 
   while(1) {
     static unsigned long last_second;
-  
+ 
     // Pet the dog
     wdt_reset();
-  
-    // next, blink the LOCK LED if we're locked so people know we're alive
-    // 152 is 10 MHz / 65536 - timer_hibits frequency
-    // Divide each second into 10 spots. The even numbered ones will always
-    // be "off", and the odd numbered ones will count the value of "lock".
-    // so a single-blink, double-blink or triple-blink.
-    unsigned char blink_pos = timer_hibits % (NOMINAL_CLOCK / 65536);
-    blink_pos = (10 * blink_pos) / (NOMINAL_CLOCK / 65536);
-    if (blink_pos % 2 != 0 && blink_pos < lock * 2)
-      LED_PORT |= LOCK_LED;
-    else
-      LED_PORT &= ~LOCK_LED;
+
+#ifdef DEBUG
+    // with debug firmware, the 0 bit is the GPS status and the 1 bit is
+    // whether we've logged that status since the last change or not.
+    if (!(gps_status & 0x2)) {
+      gps_status |= 0x2;
+      if (gps_status & 0x1) {
+        tx_pstr(PSTR("G_LK\r\n"));
+      } else {
+        tx_pstr(PSTR("G_UN\r\n"));
+      }
+    }
+#endif
+
+    // next, take care of the LEDs.
+    // If gps_status is 0, then blink them back and forth at 2 Hz.
+    // Otherwise, put the binary value of "lock" on the two LEDs.
+    if (gps_status & 0x1) {
+      if (lock & 1)
+        LED_PORT |= LED0;
+      else
+        LED_PORT &= ~LED0;
+      if (lock & 2)
+        LED_PORT |= LED1;
+      else
+        LED_PORT &= ~LED1;
+    } else {
+      unsigned char blink_pos = timer_hibits % (NOMINAL_CLOCK / 65536);
+      blink_pos = (4 * blink_pos) / (NOMINAL_CLOCK / 65536);
+      if (blink_pos & 1) {
+        LED_PORT |= LED0;
+        LED_PORT &= ~LED1;
+      } else {
+        LED_PORT |= LED1;
+        LED_PORT &= ~LED0;
+      }
+    }
 
     // If we haven't had a PPS event since we were last here, we're done.
     if (last_second == pps_count) continue;
     last_second = pps_count;
-  
+
     // Collect the sum total of all of the deltas in the sample buffer.
     long sample_drift = 0;
     for(int i = 0; i < valid_samples; i++) {
@@ -364,7 +428,7 @@ void main() {
     if (valid_samples > 0)
       tx_pstr(PSTR("\r\n"));
 #endif
- 
+
     // If the sample buffer is full, claim success if the total drift is under control
     // Each count is 0.1 ppb, but you have to add one to round up.
     if (valid_samples < SAMPLE_COUNT) {
@@ -388,29 +452,56 @@ void main() {
     // for user feedback
     int latest_sample = sample_buffer[valid_samples - 1];
     
+#ifdef PLL
+    total_error += latest_sample;
+
+    // For the PLL, use a PI controller (a PID without the D). For us the "P" factor will be the last error,
+    // and the "I" factor will be the total error. If we needed to come up with a "D" factor, it would
+    // likely be the delta between the first and last sample in the sample buffer, or last and next-to-last.
+    trim_percent -= DAC_SIGN * ((latest_sample * K_P) + (total_error * K_I));
+    // And now, throw away the fractional part for writing to the DAC.
+    unsigned int trim_value = (int)(trim_percent / 100) + 0x8000;
+
+#else
+    // This FLL code doesn't use PI because PI or PID requires looking back at the history.
+    // We are consciously ignoring everything except the most recent sample.
+
     if (latest_sample == 0) {
       // WOO HOO! Nothing to do!
     } else if (abs(latest_sample) < 4) {
       // When we're close in, just *nudge* the clock one unit at a time
       // but only using the most recent error delta.
       if (latest_sample != 0) {
-        trim_value += (latest_sample<0)?1:-1;
+        trim_value += DAC_SIGN * ((latest_sample<0)?1:-1);
       }
     } else if (abs(latest_sample) < 500) {
       // Try and guestimate from the sample drift how hard to hit the
       // oscillator. Each DAC count value is worth around 0.4 ppb, and
       // each error step is 1 ppb. But we want to under-adjust slightly
       // to avoid oscillation. So let's call it 4 DAC counts per error unit.
-      trim_value -= latest_sample * 2;
+      trim_value -= DAC_SIGN * latest_sample * 2;
     } else {
       // WTF? Nothing makes sense anymore. Give it a hard shove.
-      trim_value += (latest_sample < 0)?1000:-1000;
+      trim_value += DAC_SIGN * ((latest_sample < 0)?1000:-1000);
     }
+#endif
     writeDacValue(trim_value);
 
 #ifdef DEBUG
     {
       char buf[8];
+#ifdef PLL
+      tx_pstr(PSTR("TE="));
+      itoa(total_error, buf, 10);
+      tx_str(buf);
+      tx_pstr(PSTR("\r\nTP="));
+      itoa(DAC_SIGN * trim_percent / 100, buf, 10);
+      tx_str(buf);
+      tx_char('.');
+      itoa(abs(trim_percent % 100), buf, 10);
+      tx_str(buf);
+      tx_str("\r\n");
+#endif
       tx_pstr(PSTR("TV="));
       itoa(trim_value, buf, 16);
       tx_str(buf);
