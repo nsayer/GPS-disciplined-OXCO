@@ -107,6 +107,9 @@ volatile long trim_percent;
 #else
 volatile unsigned int trim_value;
 #endif
+#ifdef DEBUG
+volatile unsigned char pdop_buf[5];
+#endif
 
 // Write the given 16 bit value to our AD5061 DAC.
 // The data format is 6 bits of 0, then two bits of
@@ -265,6 +268,7 @@ static inline void handleGPS() {
     //tx_char('2'); // diagnostic
     return; // wrong sentence
   }
+  //$GPGSA,A,3,02,06,12,24,25,29,,,,,,,1.61,1.33,0.90*01
   unsigned char *ptr = (unsigned char *)rx_buf;
   for(i = 0; i < 2; i++) {
     ptr = (unsigned char *)strchr((const char *)ptr, ',');
@@ -279,6 +283,20 @@ static inline void handleGPS() {
     //tx_char('4'); // diagnostic
     return; // no change in status
   }
+#ifdef DEBUG
+  // continue parsing to find the PDOP value
+  for(i = 2; i < 15; i++) {
+    ptr = (unsigned char *)strchr((const char *)ptr, ',');
+    if (ptr == NULL) {
+      return; // not enough commas
+    }
+    ptr++; // skip over it
+  }
+  unsigned char len = ((unsigned char*)strchr((const char *)ptr, ',')) - ptr;
+  if (len > sizeof(pdop_buf) - 1) len = sizeof(pdop_buf) - 1; // truncate if too long
+  memcpy((void*)pdop_buf, ptr, len);
+  pdop_buf[len] = 0; // null terminate
+#endif
   gps_status = gps_now_valid;
   if (!gps_status) {
     valid_samples = -1; // and clear the sample buffer
@@ -357,6 +375,9 @@ void main() {
   rx_str_len = 0;
 #ifdef PLL
   total_error = 0;
+#endif
+#ifdef DEBUG
+  *pdop_buf = 0; // null terminate
 #endif
 
   sei();
@@ -508,6 +529,8 @@ void main() {
       tx_pstr(PSTR("\r\nER="));
       itoa(sample_drift, buf, 10);
       tx_str(buf);
+      tx_pstr(PSTR("\r\nPD="));
+      tx_str((const char *)pdop_buf);
       tx_pstr(PSTR("\r\n"));
     }
 #endif
