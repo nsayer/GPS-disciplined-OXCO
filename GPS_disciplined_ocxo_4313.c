@@ -279,10 +279,6 @@ static inline void handleGPS() {
     ptr++; // skip over it
   }
   char gps_now_valid = (*ptr == '3')?1:0; // The ?: is just in case some compiler decides true is some value other than 1.
-  if (gps_now_valid == (gps_status & 1)) { // ignore other than the LSB - it's used by the debug firmware.
-    //tx_char('4'); // diagnostic
-    return; // no change in status
-  }
 #ifdef DEBUG
   // continue parsing to find the PDOP value
   for(i = 2; i < 15; i++) {
@@ -297,6 +293,10 @@ static inline void handleGPS() {
   memcpy((void*)pdop_buf, ptr, len);
   pdop_buf[len] = 0; // null terminate
 #endif
+  if (gps_now_valid == (gps_status & 1)) { // ignore other than the LSB - it's used by the debug firmware.
+    //tx_char('4'); // diagnostic
+    return; // no change in status
+  }
   gps_status = gps_now_valid;
   if (!gps_status) {
     valid_samples = -1; // and clear the sample buffer
