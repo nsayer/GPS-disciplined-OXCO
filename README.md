@@ -16,11 +16,11 @@ The firmware offers a behavioral choice between an FLL and a PLL. The difference
 
 With DEBUG turned on, you should see the following items on the serial output:
 
-START - the firmware prints this once at startup. If you see it any other time, it means either the watchdog has rebooted the controller or something else has gone wrong.
-G_LK / G_UN - GPS lock and unlock.
-SB= - this line contains the entire sample buffer, ordered from oldest to newest. The sample buffer contains the most recent 100 second errors.
-TV= - the current trim value - that is, the value written to the DAC. 0x8000 represents 0. Values higher than that will result in lower frequency output, and vice-versa. Each count should represent approximately 200 ppt worth of adjustment.
-TP= - (PLL only) the current trim percentage. For the PLL, the trim value is maintained internally with two (base 10) fractional digits so that adjustments can be made finer than just one DAC step. The actual DAC value written, however, drops the fractional part.
-ER= - the current sum of the error buffer (SB=). This is used to provide the user lock quality feedback.
-TE= - (PLL only) the current total error. The sum of all of the 100 second errors (SB=) since the last GPS lock.
-PD= - the PDOP value reported by the GPS module in the last $GPGSA sentence.
+* START - the firmware prints this once at startup. If you see it any other time, it means either the watchdog has rebooted the controller or something else has gone wrong.
+* G_LK / G_UN - GPS lock and unlock.
+* SB= - this line contains the entire sample buffer, ordered from oldest to newest. The sample buffer contains the most recent 100 second errors.
+* TV= - the current trim value - that is, the value written to the DAC. 0x8000 represents 0. Values higher than that will result in lower frequency output, and vice-versa. Each count should represent approximately 200 ppt worth of adjustment.
+* TP= - (PLL only) the current trim percentage. For the PLL, the trim value is maintained internally with two (base 10) fractional digits so that adjustments can be made finer than just one DAC step. The actual DAC value written, however, drops the fractional part.
+* ER= - the current sum of the error buffer (SB=). This is used to provide the user lock quality feedback.
+* TE= - (PLL only) the current total error. The sum of all of the 100 second errors (SB=) since the last GPS lock.
+* PD= - the PDOP value reported by the GPS module in the last $GPGSA sentence.
