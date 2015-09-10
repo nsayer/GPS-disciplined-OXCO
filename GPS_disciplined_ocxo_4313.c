@@ -46,8 +46,8 @@
 // the PI controller factors. These are as of yet untuned guesses. They represent
 // values 100 times higher than they are. That is, imagine moving the decimal point two
 // spots left.
-#define K_P (100)
-#define K_I (005)
+#define K_P (150)
+#define K_I (010)
 #endif
 
 // 10 MHz.
@@ -164,7 +164,7 @@ ISR(TIMER1_CAPT_vect) {
   static unsigned long last_timer_val;
   // Do this quickly!
   unsigned long timer_val = (((unsigned long)timer_hibits) << 16) | ICR1;
-  if (gps_status == 0) {
+  if ((gps_status & 1) == 0) {
     // at least keep track of the beginning of the second.
     last_timer_val = timer_val;
     return; // we don't care right now.
@@ -197,7 +197,7 @@ ISR(USART0_RX_vect) {
   
   if (rx_str_len == 0 && rx_char != '$') return; // wait for a "$" to start the line.
   rx_buf[rx_str_len] = rx_char;
-  if (rx_char == 0x0d) {
+  if (rx_char == 0x0d || rx_char == 0x0a) {
     rx_buf[rx_str_len] = 0; // null terminate
     handleGPS();
     rx_str_len = 0; // now clear the buffer
@@ -254,60 +254,53 @@ static inline void handleGPS() {
     checksum ^= rx_buf[i];
   }
   if (i > str_len - 3) {
-    //tx_char('0'); // diagnostic
     return; // there has to be room for the "*" and checksum.
   }
   i++; // skip the *
   unsigned char sent_checksum = (hexChar(rx_buf[i]) << 4) | hexChar(rx_buf[i + 1]);
   if (sent_checksum != checksum) {
-    //tx_char('1'); // diagnostic
     return; // bad checksum.
   }
   
-  if (strncmp_P((const char*)rx_buf, PSTR("$GPGSA"), 6)) {
-    //tx_char('2'); // diagnostic
-    return; // wrong sentence
-  }
-  //$GPGSA,A,3,02,06,12,24,25,29,,,,,,,1.61,1.33,0.90*01
-  unsigned char *ptr = (unsigned char *)rx_buf;
-  for(i = 0; i < 2; i++) {
-    ptr = (unsigned char *)strchr((const char *)ptr, ',');
-    if (ptr == NULL) {
-      //tx_char('3'); // diagnostic
-      return; // not enough commas
+  if (!strncmp_P((const char*)rx_buf, PSTR("$GPGSA"), 6)) {
+    // $GPGSA,A,3,02,06,12,24,25,29,,,,,,,1.61,1.33,0.90*01
+    unsigned char *ptr = (unsigned char *)rx_buf;
+    for(i = 0; i < 2; i++) {
+      ptr = (unsigned char *)strchr((const char *)ptr, ',');
+      if (ptr == NULL) {
+        return; // not enough commas
+      }
+      ptr++; // skip over it
     }
-    ptr++; // skip over it
-  }
-  char gps_now_valid = (*ptr == '3')?1:0; // The ?: is just in case some compiler decides true is some value other than 1.
+    char gps_now_valid = (*ptr == '3')?1:0; // The ?: is just in case some compiler decides true is some value other than 1.
 #ifdef DEBUG
-  // continue parsing to find the PDOP value
-  for(i = 2; i < 15; i++) {
-    ptr = (unsigned char *)strchr((const char *)ptr, ',');
-    if (ptr == NULL) {
-      return; // not enough commas
+    // continue parsing to find the PDOP value
+    for(i = 2; i < 15; i++) {
+      ptr = (unsigned char *)strchr((const char *)ptr, ',');
+      if (ptr == NULL) {
+        return; // not enough commas
+      }
+      ptr++; // skip over it
     }
-    ptr++; // skip over it
-  }
-  unsigned char len = ((unsigned char*)strchr((const char *)ptr, ',')) - ptr;
-  if (len > sizeof(pdop_buf) - 1) len = sizeof(pdop_buf) - 1; // truncate if too long
-  memcpy((void*)pdop_buf, ptr, len);
-  pdop_buf[len] = 0; // null terminate
+    unsigned char len = ((unsigned char*)strchr((const char *)ptr, ',')) - ptr;
+    if (len > sizeof(pdop_buf) - 1) len = sizeof(pdop_buf) - 1; // truncate if too long
+    memcpy((void*)pdop_buf, ptr, len);
+    pdop_buf[len] = 0; // null terminate
 #endif
-  if (gps_now_valid == (gps_status & 1)) { // ignore other than the LSB - it's used by the debug firmware.
-    //tx_char('4'); // diagnostic
-    return; // no change in status
-  }
-  gps_status = gps_now_valid;
-  if (!gps_status) {
-    valid_samples = -1; // and clear the sample buffer
-    sample_window_pos = SAMPLE_SECONDS;
+    if (gps_now_valid == (gps_status & 1)) { // ignore other than the LSB - it's used by the debug firmware.
+      return; // no change in status
+    }
+    gps_status = gps_now_valid;
+    if (!gps_status) {
+      valid_samples = -1; // and clear the sample buffer
+      sample_window_pos = SAMPLE_SECONDS;
 #ifdef PLL
-    // Restart the error window for every GPS lock interval. We don't track drift during holdover.
-    total_error = 0;
+      // Restart the error window for every GPS lock interval. We don't track drift during holdover.
+      total_error = 0;
 #endif
-    lock = 0;
+      lock = 0;
+    }
   }
-  //tx_char('*'); // diagnostic
 }
 
 void main() {
@@ -328,7 +321,7 @@ void main() {
 // to the GPS module yourself with the diag port on the board
 // if desired. But with DEBUG on, that won't work, since the
 // controller transmits whenever. The controller can transmit
-// anything it wants - anything that's not a proper NEMA sentence
+// anything it wants - anything that's not a proper NMEA sentence
 // will be ignored by the GPS module.
 #ifdef DEBUG
   UCSRB = _BV(RXCIE) | _BV(RXEN) | _BV(TXEN); // transmit is for debugging
@@ -356,7 +349,7 @@ void main() {
     trim_value = 0x8000; // default to midrange
   writeDacValue(trim_value);
 #ifdef PLL
-  trim_percent = (trim_value - 0x8000) * 100;
+  trim_percent = DAC_SIGN * (trim_value - 0x8000) * 100;
   }
 #endif
 
