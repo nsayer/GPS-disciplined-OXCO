@@ -47,7 +47,7 @@
 // values 100 times higher than they are. That is, imagine moving the decimal point two
 // spots left.
 #define K_P (150)
-#define K_I (010)
+#define K_I (10)
 #endif
 
 // 10 MHz.
@@ -349,7 +349,7 @@ void main() {
     trim_value = 0x8000; // default to midrange
   writeDacValue(trim_value);
 #ifdef PLL
-  trim_percent = DAC_SIGN * (trim_value - 0x8000) * 100;
+  trim_percent = (((long)trim_value) - 0x8000) * 100;
   }
 #endif
 
@@ -472,7 +472,8 @@ void main() {
     // For the PLL, use a PI controller (a PID without the D). For us the "P" factor will be the last error,
     // and the "I" factor will be the total error. If we needed to come up with a "D" factor, it would
     // likely be the delta between the first and last sample in the sample buffer, or last and next-to-last.
-    trim_percent -= DAC_SIGN * ((latest_sample * K_P) + (total_error * K_I));
+    long adj_val = DAC_SIGN * ((((long)latest_sample) * K_P) + (total_error * K_I));
+    trim_percent -= adj_val;
     // And now, throw away the fractional part for writing to the DAC.
     unsigned int trim_value = (int)(trim_percent / 100) + 0x8000;
 
@@ -507,6 +508,12 @@ void main() {
 #ifdef PLL
       tx_pstr(PSTR("TE="));
       itoa(total_error, buf, 10);
+      tx_str(buf);
+      tx_pstr(PSTR("\r\nAV="));
+      itoa(adj_val / 100, buf, 10);
+      tx_str(buf);
+      tx_char('.');
+      itoa(abs(adj_val % 100), buf, 10);
       tx_str(buf);
       tx_pstr(PSTR("\r\nTP="));
       itoa(DAC_SIGN * trim_percent / 100, buf, 10);
