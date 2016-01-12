@@ -37,17 +37,24 @@
  * OPTIONS
  *
  */
-//#define DEBUG
+//er#define DEBUG
 
 // Comment this out for an FLL instead of a PLL. See the readme for what this means.
-//#define PLL
+#define PLL
+
+//#define OH300
 
 #ifdef PLL
 // the PI controller factors. These are as of yet untuned guesses. They represent
 // values 100 times higher than they are. That is, imagine moving the decimal point two
 // spots left.
+#ifdef OH300
+#define K_P (438)
+#define K_I (37)
+#else
 #define K_P (150)
 #define K_I (10)
+#endif
 #endif
 
 // 10 MHz.
@@ -73,7 +80,11 @@
 #define EE_TRIM_LOC ((uint16_t*)0)
 // If the stored EEPROM trim value differs by this much from the present value,
 // then update it
+#ifdef OH300
+#define EE_UPDATE_OFFSET (250)
+#else
 #define EE_UPDATE_OFFSET (10)
+#endif
 
 // How many samples do we keep in our rolling window?
 #define SAMPLE_COUNT (10)
@@ -162,8 +173,24 @@ ISR(TIMER1_OVF_vect) {
 // if the GPS receiver is unlocked, though.
 ISR(TIMER1_CAPT_vect) {
   static unsigned long last_timer_val;
-  // Do this quickly!
-  unsigned long timer_val = (((unsigned long)timer_hibits) << 16) | ICR1;
+
+  // every once in a while, the input capture and timer overflow
+  // collide. The input capture interrupt has priority, so when this
+  // happens, the high bits won't be incremented, which means the
+  // value is 65,536 too low, which wreaks havoc.
+  //
+  // We can detect this malignancy by seeing if a timer overflow
+  // interrupt is pending and if the captured value is "low".
+  // If it is, we can simulate the missing overflow interrupt
+  // locally. Once we return from this ISR, the overflow one will run next.
+  // If the captured low bits are "high," then the overflow happened
+  // after the capture, but before the test, in which case
+  // we ignore it.
+  unsigned int captured_lowbits = ICR1;
+  unsigned int local_timer_hibits = timer_hibits;
+  if ((TIFR & TOV1) && (captured_lowbits < 0x8000)) local_timer_hibits++;
+
+  unsigned long timer_val = (((unsigned long)local_timer_hibits) << 16) | captured_lowbits;
   if ((gps_status & 1) == 0) {
     // at least keep track of the beginning of the second.
     last_timer_val = timer_val;
