@@ -55,7 +55,7 @@ ISR(TIMER0_COMPA_vect) {
   if (cycle_number == cycle_count - 1) {
     // This is the last cycle. Set up the timer
     // with the short length for the *next* cycle,
-    OCR0A = last_cycle;
+    OCR0A = last_cycle - 1; // it's zero-based *and* inclusive.
   } else if (cycle_number == cycle_count) {
     // This is the short cycle. Do the toggle
     // at the end of it, and set up to go back
