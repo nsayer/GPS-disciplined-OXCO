@@ -49,8 +49,15 @@
 // last_cycle counts. At the end of the "short" cycle, we
 // toggle OC1A.
 volatile unsigned int cycle_number;
-volatile unsigned int cycle_count;
-volatile unsigned char last_cycle;
+
+// Do the math. Divide the DIVISOR by 2 to make up for the fact
+// that it's a toggling rate. Divide by the prescaler
+// and then divide by 256 to get the quotient, which is the
+// number of full 256 count cycles.
+static const unsigned int cycle_count = (unsigned int)(DIVISOR / (2L * PRESCALE * 256));
+// The remainder after the above division is the number
+// of counts in the *short* cycle.
+static const unsigned char last_cycle = (unsigned char)((DIVISOR / (2 * PRESCALE)) - (cycle_count * 256));
 
 ISR(TIMER1_COMPA_vect) {
   cycle_number++;
@@ -85,15 +92,6 @@ void main() {
   OCR1C = 0xff; // start with the timer maxed out.
   OCR1A = 0xff; // start with the timer maxed out.
   PORTB = 0; // Initialize all pins low.
-
-  // Do the math. Divide the DIVISOR by 2 to make up for the fact
-  // that it's a toggling rate. Divide by the prescaler
-  // and then divide by 256 to get the quotient, which is the
-  // number of full 256 count cycles.
-  cycle_count = (unsigned int)(DIVISOR / (2L * PRESCALE * 256));
-  // The remainder after the above division is the number
-  // of counts in the *short* cycle.
-  last_cycle = (unsigned char)((DIVISOR / (2 * PRESCALE)) - (cycle_count * 256));
 
   sei(); // turn on interrupts
   while(1); // And we're done.
