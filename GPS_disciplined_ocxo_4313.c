@@ -105,7 +105,6 @@
 volatile int sample_buffer[SAMPLE_COUNT];
 volatile char valid_samples;
 volatile unsigned char sample_window_pos;
-volatile unsigned int trim_value;
 volatile unsigned int timer_hibits;
 volatile unsigned long pps_count;
 volatile unsigned char gps_status;
