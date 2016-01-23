@@ -37,7 +37,7 @@
  * OPTIONS
  *
  */
-//er#define DEBUG
+//#define DEBUG
 
 // Comment this out for an FLL instead of a PLL. See the readme for what this means.
 #define PLL
@@ -548,7 +548,7 @@ void main() {
       tx_char('.');
       itoa(abs(trim_percent % 100), buf, 10);
       tx_str(buf);
-      tx_str("\r\n");
+      tx_pstr(PSTR("\r\n"));
 #endif
       tx_pstr(PSTR("TV="));
       itoa(trim_value, buf, 16);
