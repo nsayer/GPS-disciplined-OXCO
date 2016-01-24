@@ -187,7 +187,7 @@ ISR(TIMER1_CAPT_vect) {
   // we ignore it.
   unsigned int captured_lowbits = ICR1;
   unsigned int local_timer_hibits = timer_hibits;
-  if ((TIFR & TOV1) && (captured_lowbits < 0x8000)) local_timer_hibits++;
+  if ((TIFR & _BV(TOV1)) && (captured_lowbits < 0x8000)) local_timer_hibits++;
 
   unsigned long timer_val = (((unsigned long)local_timer_hibits) << 16) | captured_lowbits;
   if ((gps_status & 1) == 0) {
