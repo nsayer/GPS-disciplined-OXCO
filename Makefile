@@ -21,13 +21,13 @@ CFLAGS = -mmcu=$(CHIP) $(OPTS)
 %.elf: %.o
 	$(CC) $(CFLAGS) -o $@ $^
 
-all:	GPS_disciplined_ocxo_4313.hex
+all:	GPSDO.hex
 
 clean:
 	rm -f *.hex *.elf *.o
 
-flash:	GPS_disciplined_ocxo_4313.hex
-	$(AVRDUDE) -c $(PROGRAMMER) -p $(CHIP) -U flash:w:GPS_disciplined_ocxo_4313.hex
+flash:	GPSDO.hex
+	$(AVRDUDE) -c $(PROGRAMMER) -p $(CHIP) -U flash:w:GPSDO.hex
 
 fuse:
 	$(AVRDUDE) -c $(PROGRAMMER) -p $(CHIP) -U hfuse:w:0xdf:m -U lfuse:w:0x62:m -U efuse:w:0xff:m

@@ -37,12 +37,50 @@
  * OPTIONS
  *
  */
-//#define DEBUG
+#define DEBUG
 
 // Comment this out for an FLL instead of a PLL. See the readme for what this means.
 #define PLL
 
 //#define OH300
+
+// Hardware version gets incremented with each incompatible change.
+// Version 1 is boards up to v1.6
+//#define HW_VERSION 1
+// Version 2 is boards starting with v1.7
+//    Controller is clocked at 20 MHz and powered with +5V
+//    Output is derived from controller via timer operating as a divisor
+//    Division factor is one-of-four with DIP switches
+//    DAC data pin moved from MOSI to MISO to mesh up with SPI functionality.
+#define HW_VERSION 2
+
+#if (HW_VERSION >= 2)
+// This is the divide ratio for the output. The divisor *must* be even and >= 2.
+// There are two switches to select different division ratios. Assuming a
+// 20 MHz oscillator, these are the most interesting possibilities:
+// If the divisor is N, then these values are N/2 - 1
+//
+//  10 MHz: 0
+//   5 MHz: 1
+// 2.5 MHz: 3
+//   2 MHz: 4
+//   1 MHz: 9
+// 500 kHz: 19
+// 400 kHz: 24
+// 250 kHz: 39
+// 200 kHz: 49
+// 100 kHz: 99
+//  50 kHz: 199
+
+// 10 MHz
+#define DIVISOR_0 0
+// 5 MHz
+#define DIVISOR_1 1
+// 1 MHz
+#define DIVISOR_2 9
+// 100 kHz
+#define DIVISOR_3 99
+#endif
 
 #ifdef PLL
 // the PI controller factors. These are as of yet untuned guesses. They represent
@@ -57,8 +95,18 @@
 #endif
 #endif
 
+#if (HW_VERSION >= 2)
+// 20 MHz.
+#define NOMINAL_CLOCK (20000000L)
+#else
 // 10 MHz.
 #define NOMINAL_CLOCK (10000000L)
+#endif
+
+// The clock should never be off by more than 1000 ppm. If it is,
+// then something's gone terribly wrong and the best we can do is
+// ignore that delta (and log it with DEBUG firmware).
+#define MAX_DELTA (10000)
 
 /************************************************/
 
@@ -72,9 +120,19 @@
 // We don't actually need to read this pin. It triggers a TIMER1_CAPT interrupt.
 //#define PPS_PIN _BV(PORTD6)
 
+#if (HW_VERSION >= 2)
+#define SW_PORT PINB
+#define SW0 _BV(PINB0)
+#define SW1 _BV(PINB1)
+#endif
+
 #define DAC_PORT PORTB
 #define DAC_CS _BV(PORTB4)
+#if (HW_VERSION >= 2)
+#define DAC_DO _BV(PORTB6)
+#else
 #define DAC_DO _BV(PORTB5)
+#endif
 #define DAC_CLK _BV(PORTB7)
 
 #define EE_TRIM_LOC ((uint16_t*)0)
@@ -119,6 +177,10 @@ volatile unsigned int trim_value;
 #endif
 #ifdef DEBUG
 volatile unsigned char pdop_buf[5];
+volatile long erroneous_delta;
+#endif
+#if (HW_VERSION >= 2)
+unsigned char last_switches;
 #endif
 
 // Write the given 16 bit value to our AD5061 DAC.
@@ -201,11 +263,20 @@ ISR(TIMER1_CAPT_vect) {
   last_timer_val = timer_val;
   
   // If we have too many, then we're running *fast*.
-  int delta = (int)(time_span - (SAMPLE_SECONDS * NOMINAL_CLOCK));
+  long delta = time_span - (SAMPLE_SECONDS * NOMINAL_CLOCK);
+
+  if (labs(delta) > MAX_DELTA && valid_samples >= 0) {
+#ifdef DEBUG
+    erroneous_delta = delta; // Save this for topside logging
+#endif
+    pps_count++; // Do the logging
+    return; // Skip all of the rest of this
+  }
+  
   if (valid_samples < 0) {
     valid_samples++; // skip this one
   } else if (valid_samples < SAMPLE_COUNT) {
-    sample_buffer[(unsigned char)valid_samples++] = delta;
+    sample_buffer[(unsigned char)valid_samples++] = (int)delta;
   } else {
     valid_samples = SAMPLE_COUNT; // it's not ever allowed to be higher than SAMPLE_COUNT.
     for(int i = 0; i < SAMPLE_COUNT - 1; i++) {
@@ -334,7 +405,11 @@ void main() {
   MCUSR = 0;
   wdt_enable(WDTO_500MS);
 
-  PRR |= _BV(PRTIM0) | _BV(PRUSI); 
+#if (HW_VERSION >= 2)
+  PRR |= _BV(PRUSI);
+#else
+  PRR |= _BV(PRTIM0) | _BV(PRUSI);
+#endif
 
   // set up the serial port
   // On the Tiny4313, there's no UBRR. The two "halves" are not adjacent.
@@ -357,13 +432,24 @@ void main() {
   UCSRC = _BV(UCSZ0) | _BV(UCSZ1);
 
   // set up the LED port
+  // DDD6 is 0 to make PD6 an input for ICP
   DDRD = _BV(DDD4) | _BV(DDD5);
   PORTD = 0; // Turn off both LEDs
   // set up the DAC port
-  PORTB |= DAC_CS; // set CS high on the DAC *before* setting the direction.
-  // DDRB0 is 0 to make PB0 an input for ICP
+  // set CS high on the DAC *before* setting the direction. 
+#if (HW_VERSION >= 2)
+  // The switch inputs need pull-up.
+  PORTB |= DAC_CS | _BV(PORTB0) | _BV(PORTB1);
+#else
+  PORTB |= DAC_CS;
+#endif
+#if (HW_VERSION >= 2)
+  // DB2 is OC0A - the divided clock output.
+  DDRB = _BV(DDB7) | _BV(DDB6) | _BV(DDB4) | _BV(DDB2);
+#else
   DDRB = _BV(DDB4) | _BV(DDB5) | _BV(DDB7);
-  
+#endif
+ 
   // Restore the DAC to the last written value
 #ifdef PLL
   // declare it temporarily in ths context
@@ -377,6 +463,14 @@ void main() {
 #ifdef PLL
   trim_percent = (((long)trim_value) - 0x8000) * 100;
   }
+#endif
+
+#if (HW_VERSION >= 2)
+  // Set up timer0
+  TCCR0A = _BV(COM0A0) | _BV(WGM01); // CTC mode, toggle OC0A on match
+  TCCR0B = _BV(CS00); // no prescale - divide by 1
+  OCR0A = 0; // Start at minimum divisor.
+  last_switches = 0xff; // invalid value - force it to change the first time.
 #endif
 
   // Set up timer1
@@ -397,6 +491,7 @@ void main() {
 #endif
 #ifdef DEBUG
   *pdop_buf = 0; // null terminate
+  erroneous_delta = 0; // start with no erroneous delta
 #endif
 
   sei();
@@ -411,6 +506,30 @@ void main() {
     // Pet the dog
     wdt_reset();
 
+#if (HW_VERSION >= 2)
+    {
+      unsigned char switches = SW_PORT & (SW0 | SW1);
+      if (last_switches != switches) {
+        last_switches = switches;
+        switch(switches) {
+          case 0:
+            OCR0A = DIVISOR_0;
+            break;
+          case SW0:
+            OCR0A = DIVISOR_1;
+            break;
+          case SW1:
+            OCR0A = DIVISOR_2;
+            break;
+          case SW0 | SW1:
+            OCR0A = DIVISOR_3;
+            break;
+        }
+        TCNT0 = 0; // clear it out to force a reset.
+      }
+    }
+#endif
+
 #ifdef DEBUG
     // with debug firmware, the 0 bit is the GPS status and the 1 bit is
     // whether we've logged that status since the last change or not.
@@ -421,6 +540,14 @@ void main() {
       } else {
         tx_pstr(PSTR("G_UN\r\n"));
       }
+    }
+    if (erroneous_delta != 0) {
+      char buf[10];
+      tx_pstr(PSTR("XXX="));
+      ltoa(erroneous_delta, buf, 10);
+      tx_str(buf);
+      tx_pstr(PSTR("\r\n"));
+      erroneous_delta = 0; // clear it out
     }
 #endif
 
@@ -437,7 +564,7 @@ void main() {
       else
         LED_PORT &= ~LED1;
     } else {
-      unsigned char blink_pos = timer_hibits % (NOMINAL_CLOCK / 65536);
+      unsigned int blink_pos = timer_hibits % (NOMINAL_CLOCK / 65536);
       blink_pos = (4 * blink_pos) / (NOMINAL_CLOCK / 65536);
       if (blink_pos & 1) {
         LED_PORT |= LED0;
