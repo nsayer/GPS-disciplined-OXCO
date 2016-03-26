@@ -24,8 +24,8 @@
 // 5 volt digital system, a 10 MHz OH300 and the hardware phase detection
 // system.
 
-// Fuse settings: lfuse=0xe0, hfuse = 0xdb, efuse = 0x1
-// ext osc, long startup time, 2.7v brownout, preserve EEPROM, no self-programming
+// Fuse settings: lfuse=0xe0, hfuse = 0xd4, efuse = 0x1
+// ext osc, long startup time, 4.3v brownout, preserve EEPROM, no self-programming
 
 #include <stdlib.h>  
 #include <stdio.h>  
