@@ -19,8 +19,8 @@
     
   */
 
-// Fuse settings: lfuse=0xe0, hfuse = 0xdb, efuse = 0x1
-// ext osc, long startup time, 2.7v brownout, no self-programming
+// Fuse settings: lfuse=0xe0, hfuse = 0xd5, efuse = 0x1
+// ext osc, long startup time, 2.7v brownout, preserve EE, no self-programming
 
 #include <stdlib.h>  
 #include <stdio.h>  
@@ -31,6 +31,7 @@
 #include <avr/wdt.h>
 #include <avr/interrupt.h>
 #include <avr/pgmspace.h>
+#include <util/atomic.h>
 
 /************************************************
  *
@@ -54,7 +55,7 @@
 //    DAC data pin moved from MOSI to MISO to mesh up with SPI functionality.
 #define HW_VERSION 2
 
-#if (HW_VERSION >= 2)
+#if (HW_VERSION == 2)
 // This is the divide ratio for the output. The divisor *must* be even and >= 2.
 // There are two switches to select different division ratios. Assuming a
 // 20 MHz oscillator, these are the most interesting possibilities:
@@ -86,16 +87,33 @@
 // the PI controller factors. These are as of yet untuned guesses. They represent
 // values 100 times higher than they are. That is, imagine moving the decimal point two
 // spots left.
+//
+// To determine the tuning step - that is, the frequency difference between
+// adjacent DAC values (in theory), you multiply the control voltage slope
+// of the oscillator (ppm per volt) by the DAC step voltage (volts per step).
+// The value you get is ppm per step.
+//
+// Because of the multitude of different error sources, your actual tuning
+// granularity target should be at least a half an order of magnitude higher
+// than this.
 #ifdef OH300
+// The tuning step for the OH300 variant is approximately 12 ppt.
+// The DAC output range is 2.7 volts (82% of 3.3v) and the tuning
+// range across that is 0.8ppm. The target here is 0.1 ppb.
 #define K_P (438)
 #define K_I (37)
 #else
+// The tuning step for the DOT050V variant is approximately 180 ppt.
+// The DAC output range is 1.65 volts (51% of 3.3v) and the tuning
+// range across 2.7v is 10 ppm. The hardware throws away the outer 30%
+// of the tuning range because it exceeds the lifetime drift tolerance
+// of the oscillator. The target here is 1.0 ppb.
 #define K_P (150)
 #define K_I (10)
 #endif
 #endif
 
-#if (HW_VERSION >= 2)
+#if (HW_VERSION == 2)
 // 20 MHz.
 #define NOMINAL_CLOCK (20000000L)
 #else
@@ -120,7 +138,7 @@
 // We don't actually need to read this pin. It triggers a TIMER1_CAPT interrupt.
 //#define PPS_PIN _BV(PORTD6)
 
-#if (HW_VERSION >= 2)
+#if (HW_VERSION == 2)
 #define SW_PORT PINB
 #define SW0 _BV(PINB0)
 #define SW1 _BV(PINB1)
@@ -159,6 +177,7 @@
 // Note that if you ever want to parse a longer sentence, be sure to bump this up.
 // But an ATTiny4313 only has 1/4K of RAM, so...
 #define RX_BUF_LEN (64)
+#define TX_BUF_LEN (32)
 
 volatile int sample_buffer[SAMPLE_COUNT];
 volatile char valid_samples;
@@ -178,8 +197,12 @@ volatile unsigned int trim_value;
 #ifdef DEBUG
 volatile unsigned char pdop_buf[5];
 volatile long erroneous_delta;
+
+// serial transmit buffer setup
+volatile char txbuf[TX_BUF_LEN];
+volatile unsigned int txbuf_head, txbuf_tail;
 #endif
-#if (HW_VERSION >= 2)
+#if (HW_VERSION == 2)
 unsigned char last_switches;
 #endif
 
@@ -307,13 +330,36 @@ ISR(USART0_RX_vect) {
 }
 
 #ifdef DEBUG
+ISR(USART0_UDRE_vect) {
+  if (txbuf_head == txbuf_tail) {
+    // the transmit queue is empty.
+    UCSRB &= ~_BV(UDRIE); // disable the TX interrupt
+    return;
+  }
+  UDR = txbuf[txbuf_tail];
+  if (++txbuf_tail == TX_BUF_LEN) txbuf_tail = 0; // point to the next char
+}
+
 // Note that we're only really going to use the transmit side
 // either for diagnostics, or during setup to configure the
-// GPS receiver. So we don't have to get too fancy, but these
-// methods will block, so the messages should be kept short.
+// GPS receiver. If the TX buffer fills up, then this method
+// will block, which should be avoided.
 static inline void tx_char(const char c) {
-  while ( !( UCSRA & _BV(UDRE))) ; // wait for empty tx reg
-  UDR = c;
+  int buf_in_use;
+  do {
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+      buf_in_use = txbuf_head - txbuf_tail;
+    }
+    if (buf_in_use < 0) buf_in_use += TX_BUF_LEN;
+  } while (buf_in_use >= TX_BUF_LEN - 2) ; // wait for room in the transmit buffer
+
+  txbuf[txbuf_head] = c;
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    // this needs to be atomic, because an intermediate state is txbuf_head
+    // pointing *beyond* the end of the buffer.
+    if (++txbuf_head == TX_BUF_LEN) txbuf_head = 0; // point to the next free spot in the tx buffer
+  }
+  UCSRB |= _BV(UDRIE); // enable the TX interrupt. If it was disabled, then it will trigger one now.
 }
 
 static inline void tx_pstr(const char *buf) {
@@ -324,6 +370,29 @@ static inline void tx_pstr(const char *buf) {
 static inline void tx_str(const char *buf) {
   for(int i = 0; i < strlen(buf); i++)
     tx_char(buf[i]);
+}
+
+// lame. But the only available alternative is floating point.
+static unsigned long inline pow10(const unsigned int val) {
+  unsigned long out = 1;
+  for(int i = 0; i < val; i++) out *= 10;
+  return out;
+}
+
+// Print out a fixed-point value with the given number of decimals
+static void tx_fp(const long val, const unsigned int digits) {
+  char buf[16];
+  tx_char(val<0?'-':'+');
+  unsigned long abs_val = labs(val);
+  ltoa(abs_val / pow10(digits), buf, 10);
+  tx_str(buf);
+  if (digits == 0) return;
+  tx_char('.');
+  unsigned long frac_part = abs_val % pow10(digits);
+  for(int i = 1; i < digits; i++)
+    if (frac_part < pow10(i)) tx_char('0');
+  ltoa(frac_part, buf, 10);
+  tx_str(buf);
 }
 #endif
 
@@ -405,7 +474,7 @@ void main() {
   MCUSR = 0;
   wdt_enable(WDTO_500MS);
 
-#if (HW_VERSION >= 2)
+#if (HW_VERSION == 2)
   PRR |= _BV(PRUSI);
 #else
   PRR |= _BV(PRTIM0) | _BV(PRUSI);
@@ -437,13 +506,13 @@ void main() {
   PORTD = 0; // Turn off both LEDs
   // set up the DAC port
   // set CS high on the DAC *before* setting the direction. 
-#if (HW_VERSION >= 2)
+#if (HW_VERSION == 2)
   // The switch inputs need pull-up.
   PORTB |= DAC_CS | _BV(PORTB0) | _BV(PORTB1);
 #else
   PORTB |= DAC_CS;
 #endif
-#if (HW_VERSION >= 2)
+#if (HW_VERSION == 2)
   // DB2 is OC0A - the divided clock output.
   DDRB = _BV(DDB7) | _BV(DDB6) | _BV(DDB4) | _BV(DDB2);
 #else
@@ -465,7 +534,7 @@ void main() {
   }
 #endif
 
-#if (HW_VERSION >= 2)
+#if (HW_VERSION == 2)
   // Set up timer0
   TCCR0A = _BV(COM0A0) | _BV(WGM01); // CTC mode, toggle OC0A on match
   TCCR0B = _BV(CS00); // no prescale - divide by 1
@@ -492,6 +561,7 @@ void main() {
 #ifdef DEBUG
   *pdop_buf = 0; // null terminate
   erroneous_delta = 0; // start with no erroneous delta
+  txbuf_tail = txbuf_head = 0; // clear the transmit buffer
 #endif
 
   sei();
@@ -506,7 +576,7 @@ void main() {
     // Pet the dog
     wdt_reset();
 
-#if (HW_VERSION >= 2)
+#if (HW_VERSION == 2)
     {
       unsigned char switches = SW_PORT & (SW0 | SW1);
       if (last_switches != switches) {
@@ -663,16 +733,9 @@ void main() {
       itoa(total_error, buf, 10);
       tx_str(buf);
       tx_pstr(PSTR("\r\nAV="));
-      itoa(adj_val / 100, buf, 10);
-      tx_str(buf);
-      tx_char('.');
-      itoa(abs(adj_val % 100), buf, 10);
-      tx_str(buf);
+      tx_fp(adj_val, 2);
       tx_pstr(PSTR("\r\nTP="));
-      itoa(DAC_SIGN * trim_percent / 100, buf, 10);
-      tx_str(buf);
-      tx_char('.');
-      itoa(abs(trim_percent % 100), buf, 10);
+      tx_fp(DAC_SIGN * trim_percent, 2);
       tx_str(buf);
       tx_pstr(PSTR("\r\n"));
 #endif
@@ -692,6 +755,7 @@ void main() {
     // our trim value differs from the recorded one "significantly." 
     if (latest_sample == 0 && abs(eeprom_read_word(EE_TRIM_LOC) - trim_value) > EE_UPDATE_OFFSET) {
       eeprom_write_word(EE_TRIM_LOC, trim_value);
+      tx_pstr(PSTR("EEU\r\n"));
     }
   }
 }
