@@ -2,8 +2,13 @@
 # Change this to whatever AVR programmer you want to use.
 PROGRAMMER = usbtiny
 
-# Change this if you use a different controller.
-CHIP = attiny4313
+# Select the hardware version you're using
+# v1 or v2
+#CHIP = attiny4313
+#OUT=GPSDO
+# v3
+CHIP = attiny841
+OUT=GPSDO_v3
 
 CC = avr-gcc
 OBJCPY = avr-objcopy
@@ -21,15 +26,15 @@ CFLAGS = -mmcu=$(CHIP) $(OPTS)
 %.elf: %.o
 	$(CC) $(CFLAGS) -o $@ $^
 
-all:	GPSDO.hex
+all:	$(OUT).hex $(OUT).hex
 
 clean:
 	rm -f *.hex *.elf *.o
 
-flash:	GPSDO.hex
-	$(AVRDUDE) -c $(PROGRAMMER) -p $(CHIP) -U flash:w:GPSDO.hex
+flash:	$(OUT).hex
+	$(AVRDUDE) -c $(PROGRAMMER) -p $(CHIP) -U flash:w:$(OUT).hex
 
 fuse:
-	$(AVRDUDE) -c $(PROGRAMMER) -p $(CHIP) -U hfuse:w:0xdf:m -U lfuse:w:0x62:m -U efuse:w:0xff:m
+	$(AVRDUDE) -c $(PROGRAMMER) -p $(CHIP) -U hfuse:w:0xd5:m -U lfuse:w:0xe0:m -U efuse:w:0xff:m
 
 init:	fuse flash
