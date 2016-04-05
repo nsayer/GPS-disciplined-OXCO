@@ -143,6 +143,7 @@
 unsigned int last_dac_value;
 double iTerm;
 double trim_value;
+double last_adj_val;
 double average_phase_error;
 double average_pps_error;
 unsigned char mode;
@@ -418,6 +419,12 @@ static inline void handleGPS() {
 }
 
 static void reset_pll() {
+  if (mode != MODE_START) {
+    // if we're exiting the PLL, then at least take the most recent
+    // adjustment value we had and add it back to the trim value for free-running.
+    trim_value -= last_adj_val;
+    last_adj_val = 0.;
+  }
   iTerm = 0.;
   average_phase_error = 0.;
   average_pps_error = 0.;
@@ -479,6 +486,7 @@ void main() {
 
   last_dac_value = 0x8000; // the DAC defaults to powering up at mid-point.
   pps_count = 0;
+  mode = MODE_START;
   reset_pll();
   gps_status = 0;
   rx_str_len = 0;
@@ -518,7 +526,8 @@ void main() {
   }
 */
   // the default value of the DAC is midpoint, so nothing needs to be done.
-  trim_value = 0;
+  trim_value = 0.;
+  last_adj_val = 0.;
 
   sei();
 
@@ -665,8 +674,11 @@ void main() {
 #endif
       // If the average PPS error stays under 10 ppb for a minute, transition out to phase discipline.
       if (fabs(average_pps_error) <= 0.1) {
-        if (++exit_timer >= 60 && fabs(average_phase_error) <= 20.0) {
+        // Once the PPS error is under control, try to get the phase near zero before starting
+        // the PLL. But don't try for longer than 20 minutes before giving up.
+        if ((++exit_timer >= 60 && fabs(average_phase_error) <= 20.0) || exit_timer >= 1200) {
           mode = MODE_FAST;
+          exit_timer = 0;
 #ifdef DEBUG
           tx_pstr(PSTR("M_FAST\r\n\r\n"));
 #endif
@@ -705,6 +717,7 @@ void main() {
       if (fabs(average_phase_error) <= 1.0) {
         if (++exit_timer >= 60) {
           mode = MODE_SLOW;
+          exit_timer = 0;
 #ifdef DEBUG
           tx_pstr(PSTR("M_SLOW\r\n\r\n"));
 #endif
@@ -747,6 +760,9 @@ void main() {
 
     // And now, throw away the fractional part for writing to the DAC.
     unsigned int dac_value = (int)(DAC_SIGN * (trim_value - adj_val)) + 0x8000;
+
+    // save this for use when/if we revert to the START mode (GPS unlock).
+    last_adj_val = adj_val;
 
     writeDacValue(dac_value);
 
