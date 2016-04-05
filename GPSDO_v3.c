@@ -30,6 +30,7 @@
 #include <stdlib.h>  
 #include <stdio.h>  
 #include <string.h>
+#include <math.h>
 #include <avr/io.h>
 #include <avr/eeprom.h>
 #include <avr/power.h>
@@ -45,9 +46,7 @@
  */
 #define DEBUG
 
-// the PI controller factors. These are as of yet untuned guesses. They represent
-// values 1000 times higher than they are. That is, imagine moving the decimal point three
-// spots left.
+// the PI controller factors. These are as of yet untuned guesses.
 //
 // To determine the tuning step - that is, the frequency difference between
 // adjacent DAC values (in theory), you multiply the control voltage slope
@@ -57,27 +56,43 @@
 // Because of the multitude of different error sources, your actual tuning
 // granularity target should be at least a half an order of magnitude higher
 // than this.
+//
 // The tuning step for the OH300 variant is approximately 12 ppt.
 // The DAC output range is 2.7 volts (82% of 3.3v) and the tuning
-// range across that is 0.8ppm. The target here is 0.1 ppb.
+// range across that is 0.8ppm. The DAC is 16 bits,
+// so .8ppm / 65536 is ~12 ppt. The target here is 0.1 ppb.
 //
-// A count error of 1 represents 4 ppb naively, that means an
-// error count of 1 should result in a step of 520 DAC units.
+// We expect NOMINAL_CLOCK counts between each PPS interrupt.
+// Every count off represents an error of 1e9 / NOMINAL_CLOCK ppb (or ns/sec).
 //
-// But the error is counted in 2 digit fixed point, and the DAC value
-// is *also* counted in 2 digit fixed point.
+// The ADC measures a phase range of 1 us, which we arbitrarily
+// devide at a midpoint for a range of +/- 512 ns (it's not exactly
+// equal to nanoseconds, but it's close enough for us).
 //
-// K_P is the proportional gain. This is multiplied by the error over SAMPLE_COUNT seconds.
+// The gain is how much we have to nudge the DAC to make 1 ns/sec
+// phase change-rate. That is, to alter the frequency by 1 ppb.
+#define GAIN 67
 //
-// K_I is the integral gain. This is multiplied by the long term total error.
+// In the initial FLL mode, the calculus is different. We multiply
+// this value by the error in PPB to determine the adjustment to be
+// made to the DAC. When we upshift into PLL, the final trim value
+// from the FLL is the base against which the PLL applies adjustment
+// values. In principle this value should be 0.015, but we want the
+// FLL to be more aggressive.
+#define START_GAIN .25
 //
-// All of these are in units of 1/1000000 of a DAC count.
+// What is our loop time constant? We use two different time constants - a
+// faster one when we're outside of a certain range, and a slower
+// one when we're dialed in.
+#define TC_FAST 50
+#define TC_SLOW 200
+//
+// The damping factor is how much we reduce the influence of the integral
+// term - that is, the accumulated error since the last loop startup
+// (that is, the last time the FLL determined the starting DAC value).
+#define DAMPING 1.75
 
-#define K_P (31400)
-#define K_I (13)
-
-
-// our DAC is an inverter.
+// our DAC has an inverse slope - lower values mean higher frequencies.
 #define DAC_SIGN (-1)
 
 #define LED_PORT PORTB
@@ -97,34 +112,15 @@
 // to land at this value.
 #define PHASE_ADC_MIDPOINT 512
 
+/*
 #define EE_TRIM_LOC ((uint16_t*)0)
 // If the stored EEPROM trim value differs by this much from the present value,
 // then update it. 75 is around 1 ppb or so.
 #define EE_UPDATE_OFFSET (75)
+*/
 
 // 10 MHz.
 #define NOMINAL_CLOCK (10000000L)
-
-// How many samples do we keep in our rolling window?
-#define SAMPLE_COUNT (10)
-
-// How many seconds is one sample? This shouldn't be longer
-// than 5 minutes. The time counter is only 32 bits, and will overflow
-// over after ~400 seconds at 10 MHz.
-//
-// If this isn't an odd number, then the samples may tend to have adjacent
-// errors in the opposite direction: +1, then -1, then +1 etc.
-#define SAMPLE_SECONDS (25)
-
-// The measurement granularity per sample is 10^9/(NOMINAL_CLOCK * SAMPLE_SECONDS) ppb.
-// With the above values, that's 4 ppb. The granularity of the sample window is 0.4 ppb.
-
-// The clock should never be off by more than 10 ppm. If it is,
-// then something's gone terribly wrong and the best we can do is
-// ignore that delta (and log it with DEBUG firmware).
-//
-// The delta units are 4 ppb, so 10 ppm is 2,500.
-#define MAX_DELTA (2500L)
 
 // The baud rate and calculated constant for the UART.
 #define SERIAL_BAUD (9600)
@@ -135,23 +131,31 @@
 #define RX_BUF_LEN (64)
 #define TX_BUF_LEN (96)
 
+// The start mode watches the cycle count error over a 10 second window, and
+// adjusts the DAC until a minute goes by without any errors.
+#define MODE_START 0
+
+// The FAST and SLOW modes both use the PI loop on phase alone, but with
+// the FAST and SLOW time constants, respectively.
+#define MODE_FAST 1
+#define MODE_SLOW 2
+
 unsigned int last_dac_value;
-long phase_error_sum;
-int phase_error_count;
-volatile int sample_buffer[SAMPLE_COUNT];
-volatile char valid_samples;
-volatile unsigned char sample_window_pos;
+double iTerm;
+double trim_value;
+double average_phase_error;
+double average_pps_error;
+unsigned char mode;
+unsigned int exit_timer;
+unsigned int last_adc_value;
+int wrap_count;
 volatile unsigned int timer_hibits;
 volatile unsigned long pps_count;
-volatile unsigned long sample_count;
 volatile unsigned char gps_status;
-volatile unsigned char lock;
 volatile unsigned char rx_buf[RX_BUF_LEN];
 volatile unsigned char rx_str_len;
-volatile long total_error;
-volatile long trim_percent;
-volatile unsigned int last_adc_value;
-volatile long erroneous_delta;
+volatile unsigned int irq_adc_value;
+volatile unsigned long irq_time_span;
 #ifdef DEBUG
 volatile unsigned char pdop_buf[5];
 
@@ -159,6 +163,9 @@ volatile unsigned char pdop_buf[5];
 volatile char txbuf[TX_BUF_LEN];
 volatile unsigned int txbuf_head, txbuf_tail;
 #endif
+
+#define fabs MY_fabs
+static inline double fabs(double x) { return x<0?-x:x; }
 
 // Write the given 16 bit value to our AD5061 DAC.
 // The data format is 6 bits of 0, then two bits of
@@ -239,39 +246,15 @@ ISR(TIMER1_CAPT_vect) {
   while(ADCSRA & _BV(ADSC)) ; // don't pet the watchdog - this should never take that long.
   unsigned int adc_value = ADC;
 
-  last_adc_value = adc_value;
+  irq_adc_value = adc_value;
 
-  if ((gps_status & 1) == 0) {
-    // at least keep track of the beginning of the second.
-    last_timer_val = timer_val;
-    return; // we don't care right now.
-  }
-  pps_count++;
-
-  if (--sample_window_pos > 0) return; // sample incomplete
-  sample_window_pos = SAMPLE_SECONDS; // start a new sample
   unsigned long time_span = timer_val - last_timer_val;
   last_timer_val = timer_val;
-  
-  // If we have too many, then we're running *fast*.
-  long delta = time_span - (SAMPLE_SECONDS * NOMINAL_CLOCK);
 
-  if (abs(delta) > MAX_DELTA && valid_samples >= 0) { // if valid_samples < 0, we're skipping this delta anyway.
-    erroneous_delta = delta;
-    return;
-  }
+  irq_time_span = time_span;
 
-  if (valid_samples < 0) {
-    valid_samples++; // skip this one
-  } else if (valid_samples < SAMPLE_COUNT) {
-    sample_buffer[(unsigned char)valid_samples++] = (int)delta;
-  } else {
-    valid_samples = SAMPLE_COUNT; // it's not ever allowed to be higher than SAMPLE_COUNT.
-    // rotate the buffer left once.
-    memmove((void *)&(sample_buffer[0]), (const void*)&(sample_buffer[1]), sizeof(sample_buffer[0]) * (SAMPLE_COUNT - 1));
-    sample_buffer[SAMPLE_COUNT - 1] = (int)delta;
-  }
-  sample_count++;
+  pps_count++;
+
 }
 
 static inline void handleGPS();
@@ -337,6 +320,7 @@ static inline void tx_str(const char *buf) {
     tx_char(buf[i]);
 }
 
+/*
 // lame. But the only available alternative is floating point.
 static unsigned long inline pow10(const unsigned int val) {
   unsigned long out = 1;
@@ -359,6 +343,7 @@ static void tx_fp(const long val, const unsigned int digits) {
   ltoa(frac_part, buf, 10);
   tx_str(buf);
 }
+*/
 
 #endif
 
@@ -368,6 +353,8 @@ static inline unsigned char hexChar(unsigned char c) {
   if (c >= 'A' && c <= 'F') return c - 'A' + 10;
   return 0;
 }
+
+static void reset_pll();
 
 // When this method is called, we've just received
 // a complete NEMA GPS sentence. All we're really
@@ -424,13 +411,19 @@ static inline void handleGPS() {
     }
     gps_status = gps_now_valid;
     if (!gps_status) {
-      valid_samples = -1; // and clear the sample buffer
-      sample_window_pos = SAMPLE_SECONDS;
       // Restart the error window for every GPS lock interval. We don't track drift during holdover.
-      total_error = 0;
-      lock = 0;
+      reset_pll();
     }
   }
+}
+
+static void reset_pll() {
+  iTerm = 0.;
+  average_phase_error = 0.;
+  average_pps_error = 0.;
+  mode = MODE_START;
+  exit_timer = 0;
+  wrap_count = 0;
 }
 
 void main() {
@@ -469,10 +462,6 @@ void main() {
   DAC_PORT |= DAC_CS;
   DDRA = _BV(DDRA3) | _BV(DDRA4) | _BV(DDRA5);
 
-  last_dac_value = 0x8000; // the DAC defaults to powering up at mid-point.
-  phase_error_sum = 0;
-  phase_error_count = 0;
- 
   // Set up timer1
   TCCR1A = 0; // Normal mode
   TCCR1B = _BV(ICES1) | _BV(CS10); // No noise reduction, rising edge capture, no pre-scale.
@@ -488,15 +477,11 @@ void main() {
   ADMUXB = _BV(REFS1) | _BV(REFS0); // 4.096V is ref, no external connection, no gain
   DIDR0 = _BV(ADC0D); // disable digital I/O on pin A0.
 
+  last_dac_value = 0x8000; // the DAC defaults to powering up at mid-point.
   pps_count = 0;
-  sample_count = 0;
+  reset_pll();
   gps_status = 0;
-  valid_samples = -1;
-  sample_window_pos = SAMPLE_SECONDS;
   rx_str_len = 0;
-  total_error = 0;
-  last_adc_value = PHASE_ADC_MIDPOINT;
-  erroneous_delta = 0;
 #ifdef DEBUG
   *pdop_buf = 0; // null terminate
   txbuf_head = txbuf_tail = 0; // clear the transmit buffer
@@ -511,30 +496,34 @@ void main() {
   if (mcusr_value & _BV(WDRF)) tx_pstr(PSTR("RES_WD\r\n")); // watchdog reset
 #endif
 
+/*
   // Restore the DAC to the last written value
-  // declare it temporarily in ths context
   {
-    unsigned int trim_value = eeprom_read_word(EE_TRIM_LOC);
-    if (trim_value == 0xffff) // uninitialized flash
-      trim_value = 0x8000; // default to midrange
-    writeDacValue(trim_value);
-    trim_percent = (((long)trim_value) - 0x8000) * 100;
+    unsigned int dac_value = eeprom_read_word(EE_TRIM_LOC);
+    if (dac_value == 0xffff) // uninitialized flash
+      dac_value = 0x8000; // default to midrange
+    writeDacValue(dac_value);
+    trim_value = DAC_SIGN * (((long)dac_value) - 0x8000);
 
 #ifdef DEBUG
     char buf[8];
     tx_pstr(PSTR("EE=0x"));
-    itoa(trim_value, buf, 16);
+    itoa(dac_value, buf, 16);
     tx_str(buf);
-    tx_pstr(PSTR("\r\nTP="));
-    tx_fp(DAC_SIGN * trim_percent, 2);
+    tx_pstr(PSTR("\r\nTV="));
+    dtostrf(trim_value, 7, 2, buf);
+    tx_str(buf);
     tx_pstr(PSTR("\r\n"));
 #endif
   }
+*/
+  // the default value of the DAC is midpoint, so nothing needs to be done.
+  trim_value = 0;
 
   sei();
 
   while(1) {
-    static unsigned long last_pps_count, last_sample_count;
+    static unsigned long last_pps_count = 0;
  
     // Pet the dog
     wdt_reset();
@@ -554,13 +543,13 @@ void main() {
 
     // next, take care of the LEDs.
     // If gps_status is 0, then blink them back and forth at 2 Hz.
-    // Otherwise, put the binary value of "lock" on the two LEDs.
+    // Otherwise, put the binary value of "mode" on the two LEDs.
     if (gps_status & 0x1) {
-      if (lock & 1)
+      if (mode & 1)
         LED_PORT |= LED0;
       else
         LED_PORT &= ~LED0;
-      if (lock & 2)
+      if (mode & 2)
         LED_PORT |= LED1;
       else
         LED_PORT &= ~LED1;
@@ -580,146 +569,227 @@ void main() {
     if (last_pps_count == pps_count) continue;
     last_pps_count = pps_count;
 
-    if (erroneous_delta != 0) {
+    if (!(gps_status & 0x1)) {
+#ifdef DEBUG
+      // FR - Free Running - GPS is unlocked.
+      tx_pstr(PSTR("FR\r\n\r\n"));
+#endif
+      continue;
+    }
+    long pps_cycle_delta = irq_time_span - NOMINAL_CLOCK;
+
+    if (labs(pps_cycle_delta) > (NOMINAL_CLOCK / 1000000)) { // this would be an error of 10 ppm - impossible
 #ifdef DEBUG
       char buf[16];
       // XXX - an erroneous delta. A delta of more than 10 ppm is reported, but skipped/ignored.
       tx_pstr(PSTR("XXX="));
-      ltoa(erroneous_delta, buf, 10);
+      itoa(pps_cycle_delta, buf, 10);
+      tx_str(buf);
+      tx_pstr(PSTR("\r\n\r\n"));
+#endif
+      continue;
+    }
+
+    // the time constant in START mode is the same as FAST mode.
+    unsigned int time_constant = mode==MODE_SLOW?TC_SLOW:TC_FAST;
+
+    if (mode != MODE_START) { // we don't track wraps in START mode.
+      if (last_adc_value < 150 && irq_adc_value > 750) wrap_count++;
+      if (last_adc_value > 750 && irq_adc_value < 150) wrap_count--;
+    }
+    last_adc_value = irq_adc_value;
+
+    // Since our ADC is 10 bits and the pulse is a microsecond wide we can fudge a little
+    // and claim that each ADC count is one nanosecond. So current and average phase error
+    // is in nanoseconds and is wrapped.
+    int current_phase_error = (wrap_count * PHASE_ADC_MIDPOINT * 2) +  PHASE_ADC_MIDPOINT - irq_adc_value;
+
+    // This is an approximation of a rolling average, but it's good enough
+    // for us, because it should not change very much in 1 second.
+    unsigned int filter_time = time_constant / 4;
+    average_phase_error -= average_phase_error / filter_time;
+    average_phase_error += ((double)current_phase_error) / filter_time;
+
+    // 1 unit here is 1e9/NOMINAL_FREQUENCY ppb, or 100 ppb.
+    average_pps_error -= average_pps_error / filter_time;
+    average_pps_error += ((double)pps_cycle_delta) / filter_time;
+
+#ifdef DEBUG
+    {
+      char buf[8];
+      tx_pstr(PSTR("MOD="));
+      itoa(mode, buf, 10);
       tx_str(buf);
       tx_pstr(PSTR("\r\n"));
+    }
 #endif
-      erroneous_delta = 0;
+
+    if (mode == MODE_START) {
+      // In the startup mode, we try and convert the average cycle delta
+      // into a PPB error
+      double adj_val = (1000000000.0 / NOMINAL_CLOCK) * average_pps_error * START_GAIN;
+      trim_value -= adj_val;
+      unsigned int dac_value = (int)(DAC_SIGN * trim_value) + 0x8000;
+
+      writeDacValue(dac_value);
+#ifdef DEBUG
+      {
+        char buf[8];
+        tx_pstr(PSTR("SB="));
+        ltoa(pps_cycle_delta, buf, 10);
+        tx_str(buf);
+        tx_pstr(PSTR("\r\nCPE="));
+        ltoa(current_phase_error, buf, 10);
+        tx_str(buf);
+        tx_pstr(PSTR("\r\nAPE="));
+        dtostrf(average_phase_error, 7, 2, buf);
+        tx_str(buf);
+        tx_pstr(PSTR("\r\nPPE="));
+        dtostrf(average_pps_error, 7, 2, buf);
+        tx_str(buf);
+        tx_pstr(PSTR("\r\nAV="));
+        dtostrf(adj_val, 7, 2, buf);
+        tx_str(buf);
+        tx_pstr(PSTR("\r\nTV="));
+        dtostrf(trim_value, 7, 2, buf);
+        tx_str(buf);
+        tx_pstr(PSTR("\r\nDAC=0x"));
+        ltoa(dac_value, buf, 16);
+        tx_str(buf);
+        tx_pstr(PSTR("\r\nET="));
+        ltoa(exit_timer, buf, 10);
+        tx_str(buf);
+        tx_pstr(PSTR("\r\n"));
+        tx_pstr(PSTR("\r\n"));
+      }
+#endif
+      // If the average PPS error stays under 10 ppb for a minute, transition out to phase discipline.
+      if (fabs(average_pps_error) <= 0.1) {
+        if (++exit_timer >= 60 && fabs(average_phase_error) <= 20.0) {
+          mode = MODE_FAST;
+#ifdef DEBUG
+          tx_pstr(PSTR("M_FAST\r\n\r\n"));
+#endif
+          continue;
+        }
+      } else {
+        exit_timer = 0;
+      }
       continue;
+    }
+
+    // if we somehow get an error of more than 50 ppb, then it's time to start over.
+    if (fabs(average_pps_error) >= 0.5) {
+#ifdef DEBUG
+      char buf[8];
+      tx_pstr(PSTR("PPE="));
+      dtostrf(average_pps_error, 7, 2, buf);
+      tx_str(buf);
+      tx_pstr(PSTR("\r\nM_START\r\n"));
+      tx_pstr(PSTR("\r\n"));
+#endif
+      reset_pll();
+      continue;
+    }
+
+    if (mode == MODE_FAST) {
+#ifdef DEBUG
+      {
+        char buf[8];
+        tx_pstr(PSTR("ET="));
+        ltoa(exit_timer, buf, 10);
+        tx_str(buf);
+        tx_pstr(PSTR("\r\n"));
+      }
+#endif
+      if (fabs(average_phase_error) <= 1.0) {
+        if (++exit_timer >= 60) {
+          mode = MODE_SLOW;
+#ifdef DEBUG
+          tx_pstr(PSTR("M_SLOW\r\n\r\n"));
+#endif
+        }
+      } else {
+        exit_timer = 0;
+      }
     }
 #ifdef DEBUG
     {
       char buf[8];
       // ADC - raw ADC reading from the phase comparator.
       tx_pstr(PSTR("ADC="));
-      ltoa(last_adc_value, buf, 10);
+      ltoa(irq_adc_value, buf, 10);
+      tx_str(buf);
+      tx_pstr(PSTR("\r\nWC="));
+      ltoa(wrap_count, buf, 10);
+      tx_str(buf);
+      // PPD - PPS cycle delta - the number of cycles missed/extra since the last PPS.
+      tx_pstr(PSTR("\r\nPPE="));
+      dtostrf(average_pps_error, 7, 2, buf);
+      tx_str(buf);
+      tx_pstr(PSTR("\r\nCPE="));
+      ltoa(current_phase_error, buf, 10);
+      tx_str(buf);
+      tx_pstr(PSTR("\r\nAPE="));
+      dtostrf(average_phase_error, 7, 2, buf);
       tx_str(buf);
       tx_pstr(PSTR("\r\n"));
     }
 #endif
-    int current_phase_error = PHASE_ADC_MIDPOINT - last_adc_value;
-    //int current_phase_error = last_adc_value - PHASE_ADC_MIDPOINT;
-    phase_error_sum += current_phase_error;
-    phase_error_count++;
 
-    // If the current sample is incomplete, we're done.
-    if (last_sample_count == sample_count) continue;
-    last_sample_count = sample_count;
+    double pTerm = average_phase_error * GAIN;
+    iTerm += pTerm / (time_constant * DAMPING);
 
-    long average_phase_error = phase_error_sum / SAMPLE_SECONDS;
-    phase_error_sum = phase_error_count = 0;
+    double adj_val = (pTerm + iTerm) / time_constant;
 
-    // This value is in mils
-    int sample_phase_error = (int)((average_phase_error * 1000) / 512);
+    // For the PLL, the trim_value we calculated during the FLL stays put
+    // and the adj_val we've computed will be relative to that.
 
-    // Collect the sum total of all of the deltas in the sample buffer.
-    long sample_drift = 0;
-    for(int i = 0; i < valid_samples; i++) {
-      sample_drift += sample_buffer[i];
-#ifdef DEBUG
-      char buf[8];
-      // SB - the sample buffer. The individual phase error measurements
-      tx_pstr(PSTR("SB="));
-      itoa(sample_buffer[i], buf, 10);
-      tx_str(buf);
-      tx_char(' ');
-#endif
-    }
-#ifdef DEBUG
-    if (valid_samples > 0)
-      tx_pstr(PSTR("\r\n"));
-    {
-      // ER - sample error - the average of the sample buffer.
-      tx_pstr(PSTR("ER="));
-      tx_fp(sample_drift, 1);
-      // PE - phase error - the average phase delta (in thousandths) across the sampling period.
-      tx_pstr(PSTR("\r\nPE="));
-      tx_fp(sample_phase_error, 3);
-      tx_pstr(PSTR("\r\n"));
-    }
-#endif
-    // sample_drift is one decimal place fixed-point average drift over the window.
-    sample_drift = sample_drift * 10 / SAMPLE_COUNT;
-
-    // If the sample buffer is full, claim success if the total drift is under control
-    // Each count is 0.04 ppb, but you have to add one to round up.
-    if (valid_samples < SAMPLE_COUNT) {
-      lock = 0;
-    } else if (abs(sample_drift) < 1250) { // 50 ppb
-      if (abs(sample_drift) < 125) { // 5 ppb
-        if (abs(sample_drift) < 25) // 1 ppb
-          lock = 3; // best
-        else
-          lock = 2; // better 
-      } else
-        lock = 1; // good
-    } else
-      lock = 0; // bad
-
-    // If we don't have at least one sample yet, we're done.
-    if (valid_samples <= 0) continue;
-
-    // Turn the average drift into a 2 digit fixed-point value and add in
-    // a similarly scaled amount of the phase error.
-    // Note that the sample_phase_error is in mils, so it's
-    // already in units ten times smaller
-    // (that does assume, however, that the units are comparable,
-    // which they... kinda aren't).
-    long current_error = 10 * sample_drift + (sample_phase_error / 14);
-#ifdef DEBUG
-    {
-      // CE - the latest sample, including the addition of the phase error.
-      tx_pstr(PSTR("CE="));
-      tx_fp(current_error, 2);
-      tx_pstr(PSTR("\r\n"));
-    }
-#endif
-
-    total_error += current_error;
-
-    long adj_val = DAC_SIGN * ((current_error * K_P) + (total_error * K_I)) / 10000;
-    trim_percent -= adj_val;
     // And now, throw away the fractional part for writing to the DAC.
-    unsigned int trim_value = (int)(trim_percent / 100) + 0x8000;
+    unsigned int dac_value = (int)(DAC_SIGN * (trim_value - adj_val)) + 0x8000;
 
-    writeDacValue(trim_value);
+    writeDacValue(dac_value);
 
 #ifdef DEBUG
     {
       char buf[8];
-      // TE = Total Error - the totall accumulated phase error since the last unlock
-      tx_pstr(PSTR("TE="));
-      tx_fp(total_error, 3);
+      tx_pstr(PSTR("pT="));
+      dtostrf(pTerm, 7, 2, buf);
+      tx_str(buf);
+      tx_pstr(PSTR("\r\niT="));
+      dtostrf(iTerm, 7, 2, buf);
+      tx_str(buf);
       // AV = Adjustment Value - the delta being applied right now to the TP
       tx_pstr(PSTR("\r\nAV="));
-      tx_fp(adj_val, 2);
-      // TP = Trim Percent - the frequency trim factor in DAC units with conventional
+      dtostrf(adj_val, 7, 2, buf);
+      tx_str(buf);
+      // TV = Trim Value - the frequency trim factor in DAC units with conventional
       // sign - larger values -> higher frequency
-      tx_pstr(PSTR("\r\nTP="));
-      tx_fp(DAC_SIGN * trim_percent, 2);
-      // TV = Trim Value - the actual value written to the DAC, corrected for the DAC slope (lower values -> higher frequency)
-      tx_pstr(PSTR("\r\nTV=0x"));
-      itoa(trim_value, buf, 16);
+      tx_pstr(PSTR("\r\nTV="));
+      dtostrf(trim_value, 7, 2, buf);
+      tx_str(buf);
+      // DAC = DAC Value - the actual value written to the DAC
+      tx_pstr(PSTR("\r\nDAC=0x"));
+      itoa(dac_value, buf, 16);
       tx_str(buf);
       // PDOP = Positional Dilution of Precision - the PDOP value reported by the GPS receiver
       tx_pstr(PSTR("\r\nPD="));
       tx_str((const char *)pdop_buf);
       tx_pstr(PSTR("\r\n"));
+      // end of the second.
+      tx_pstr(PSTR("\r\n"));
     }
 #endif
 
+/*
     // Only write to EEPROM when we're *exactly* dialed in, and
     // our trim value differs from the recorded one "significantly." 
-    if (abs(current_error) < 100 && abs(eeprom_read_word(EE_TRIM_LOC) - trim_value) > EE_UPDATE_OFFSET) {
+    if (fabs(average_phase_error) < 5 && abs(eeprom_read_word(EE_TRIM_LOC) - trim_value) > EE_UPDATE_OFFSET) {
       eeprom_write_word(EE_TRIM_LOC, trim_value);
 #ifdef DEBUG
       tx_pstr(PSTR("EEUP\r\n"));
 #endif
     }
+*/
   }
 }
