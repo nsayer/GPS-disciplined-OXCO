@@ -653,7 +653,7 @@ void main() {
       char buf[16];
       // XXX - an erroneous delta. A delta of more than 10 ppm is reported, but skipped/ignored.
       tx_pstr(PSTR("XXX="));
-      itoa(pps_cycle_delta, buf, 10);
+      ltoa(pps_cycle_delta, buf, 10);
       tx_str(buf);
       tx_pstr(PSTR("\r\n\r\n"));
 #endif
