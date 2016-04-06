@@ -39,12 +39,31 @@
 #include <avr/pgmspace.h>
 #include <util/atomic.h>
 
+// 10 MHz.
+#define F_CPU 10000000UL
+#include <util/delay.h>
+
+// UBRR?_VALUE macros defined here are Used below in serial initialization in main()
+#define BAUD 9600
+#include <util/setbaud.h>
+
 /************************************************
  *
  * OPTIONS
  *
  */
+
+// Turn on debug logging. Turn this off if you want to talk to the GPS
+// instead of listen to the debug log.
 #define DEBUG
+
+// Turn this on to send the WAAS enable sentence at startup.
+#define WAAS
+
+#if defined(DEBUG) || defined(WAAS)
+// define this to include the serial transmit infrastructure at all
+#define SERIAL_TX
+#endif
 
 // the PI controller factors. These are as of yet untuned guesses.
 //
@@ -62,8 +81,8 @@
 // range across that is 0.8ppm. The DAC is 16 bits,
 // so .8ppm / 65536 is ~12 ppt. The target here is 0.1 ppb.
 //
-// We expect NOMINAL_CLOCK counts between each PPS interrupt.
-// Every count off represents an error of 1e9 / NOMINAL_CLOCK ppb (or ns/sec).
+// We expect F_CPU counts between each PPS interrupt.
+// Every count off represents an error of 1e9 / F_CPU ppb (or ns/sec).
 //
 // The ADC measures a phase range of 1 us, which we arbitrarily
 // devide at a midpoint for a range of +/- 512 ns (it's not exactly
@@ -119,13 +138,6 @@
 #define EE_UPDATE_OFFSET (75)
 */
 
-// 10 MHz.
-#define NOMINAL_CLOCK (10000000L)
-
-// The baud rate and calculated constant for the UART.
-#define SERIAL_BAUD (9600)
-#define SERIAL_BAUD_CONST ((NOMINAL_CLOCK/(16L * SERIAL_BAUD)) - 1)
-
 // Note that if you ever want to parse a longer sentence, be sure to bump this up.
 // But an ATTiny841 only has 1/2K of RAM, so...
 #define RX_BUF_LEN (64)
@@ -157,7 +169,7 @@ volatile unsigned char rx_buf[RX_BUF_LEN];
 volatile unsigned char rx_str_len;
 volatile unsigned int irq_adc_value;
 volatile unsigned long irq_time_span;
-#ifdef DEBUG
+#ifdef SERIAL_TX
 volatile unsigned char pdop_buf[5];
 
 // serial transmit buffer setup
@@ -277,7 +289,21 @@ ISR(USART0_RX_vect) {
   }
 }
 
-#ifdef DEBUG
+const char hexes[] PROGMEM = "0123456789abcdef";
+
+static inline unsigned char charHex(unsigned char h) {
+  if (h > 0xf) return ' ';
+  return pgm_read_byte(&(hexes[h]));
+}
+
+static inline unsigned char hexChar(unsigned char c) {
+  if (c >= 'A' && c <= 'F') c += ('a' - 'A'); // make lower case
+  const char* outP = strchr_P(hexes, c);
+  if (outP == NULL) return 0;
+  return (unsigned char)(outP - hexes);
+}
+
+#ifdef SERIAL_TX
 ISR(USART0_UDRE_vect) {
   if (txbuf_head == txbuf_tail) {
     // the transmit queue is empty.
@@ -321,6 +347,19 @@ static inline void tx_str(const char *buf) {
     tx_char(buf[i]);
 }
 
+// send a NMEA GPS sentence. Takes the sentence
+// data between the $ and *, exclusive.
+static inline void tx_gps(const char *in) {
+  tx_char('$');
+  tx_pstr(in);
+  tx_char('*');
+  unsigned char sum = 0;
+  for(int i = 0; i < strlen_P(in); i++) sum += pgm_read_byte(&(in[i]));
+  tx_char(charHex(sum >> 8));
+  tx_char(charHex(sum & 0xf));
+  tx_pstr(PSTR("\r\n"));
+}
+
 /*
 // lame. But the only available alternative is floating point.
 static unsigned long inline pow10(const unsigned int val) {
@@ -347,13 +386,6 @@ static void tx_fp(const long val, const unsigned int digits) {
 */
 
 #endif
-
-static inline unsigned char hexChar(unsigned char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return 0;
-}
 
 static void reset_pll();
 
@@ -443,8 +475,15 @@ void main() {
   PRR |= _BV(PRTWI) | _BV(PRUSART1) | _BV(PRSPI) | _BV(PRTIM2) | _BV(PRTIM0);
 
   // set up the serial port
-  UBRR0 = SERIAL_BAUD_CONST;
+  // uses constants defined above in util/setbaud.h
+  UBRR0H = UBRRH_VALUE;
+  UBRR0L = UBRRL_VALUE;
+#if USE_2X
+  UCSR0A = _BV(U2X);
+#else
   UCSR0A = 0;
+#endif
+
 // If you need to initialize the GPS, then set TXEN, transmit
 // whatever is necessary, then clear TXEN. That will make the
 // controller's TXD line high impedance so that you can talk
@@ -454,7 +493,7 @@ void main() {
 // anything it wants - anything that's not a proper NMEA sentence
 // will be ignored by the GPS module.
 #ifdef DEBUG
-  UCSR0B = _BV(RXCIE0) | _BV(RXEN0) | _BV(TXEN0); // transmit is for debugging
+  UCSR0B = _BV(RXCIE0) | _BV(RXEN0) | _BV(TXEN0); // transmit always for debug
 #else
   UCSR0B = _BV(RXCIE0) | _BV(RXEN0);
 #endif
@@ -490,9 +529,31 @@ void main() {
   reset_pll();
   gps_status = 0;
   rx_str_len = 0;
-#ifdef DEBUG
+#ifdef SERIAL_TX
   *pdop_buf = 0; // null terminate
   txbuf_head = txbuf_tail = 0; // clear the transmit buffer
+#endif
+
+#ifdef WAAS
+#ifndef DEBUG
+  UCSR0B |= _BV(TXEN0); // turn on the UART TX just for this one operation
+#endif
+  // brief pause to insure the GPS is listening
+  _delay_ms(100);
+  wdt_reset(); // that took a while
+  // This sentence turns on WAAS reception
+  tx_gps(PSTR("PMTK301,2"));
+#ifndef DEBUG
+  // wait for the transmit buffer to drain.
+  char done;
+  do {
+    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+      done = txbuf_head == txbuf_tail;
+    }
+    wdt_reset();
+  } while(!done);
+  UCSR0B &= ~_BV(TXEN0); // turn off the UART TX
+#endif
 #endif
 
 #ifdef DEBUG
@@ -563,8 +624,8 @@ void main() {
       else
         LED_PORT &= ~LED1;
     } else {
-      unsigned int blink_pos = timer_hibits % (NOMINAL_CLOCK / 65536);
-      blink_pos = (4 * blink_pos) / (NOMINAL_CLOCK / 65536);
+      unsigned int blink_pos = timer_hibits % (F_CPU / 65536);
+      blink_pos = (4 * blink_pos) / (F_CPU / 65536);
       if (blink_pos & 1) {
         LED_PORT |= LED0;
         LED_PORT &= ~LED1;
@@ -585,9 +646,9 @@ void main() {
 #endif
       continue;
     }
-    long pps_cycle_delta = irq_time_span - NOMINAL_CLOCK;
+    long pps_cycle_delta = irq_time_span - F_CPU;
 
-    if (labs(pps_cycle_delta) > (NOMINAL_CLOCK / 1000000)) { // this would be an error of 10 ppm - impossible
+    if (labs(pps_cycle_delta) > (F_CPU / 1000000)) { // this would be an error of 10 ppm - impossible
 #ifdef DEBUG
       char buf[16];
       // XXX - an erroneous delta. A delta of more than 10 ppm is reported, but skipped/ignored.
@@ -619,7 +680,7 @@ void main() {
     average_phase_error -= average_phase_error / filter_time;
     average_phase_error += ((double)current_phase_error) / filter_time;
 
-    // 1 unit here is 1e9/NOMINAL_FREQUENCY ppb, or 100 ppb.
+    // 1 unit here is 1e9/F_CPU ppb, or 100 ppb.
     average_pps_error -= average_pps_error / filter_time;
     average_pps_error += ((double)pps_cycle_delta) / filter_time;
 
@@ -636,7 +697,7 @@ void main() {
     if (mode == MODE_START) {
       // In the startup mode, we try and convert the average cycle delta
       // into a PPB error
-      double adj_val = (1000000000.0 / NOMINAL_CLOCK) * average_pps_error * START_GAIN;
+      double adj_val = (1000000000.0 / F_CPU) * average_pps_error * START_GAIN;
       trim_value -= adj_val;
       unsigned int dac_value = (int)(DAC_SIGN * trim_value) + 0x8000;
 
@@ -717,7 +778,11 @@ void main() {
       if (fabs(average_phase_error) <= 1.0) {
         if (++exit_timer >= 60) {
           mode = MODE_SLOW;
+          time_constant = TC_SLOW;
           exit_timer = 0;
+          // translate the iTerm whenever we change the time constant.
+          double ratio = ((double)TC_SLOW)/((double)TC_FAST);
+          iTerm *= ratio;
 #ifdef DEBUG
           tx_pstr(PSTR("M_SLOW\r\n\r\n"));
 #endif
@@ -735,6 +800,9 @@ void main() {
       tx_str(buf);
       tx_pstr(PSTR("\r\nWC="));
       ltoa(wrap_count, buf, 10);
+      tx_str(buf);
+      tx_pstr(PSTR("\r\nSB="));
+      ltoa(pps_cycle_delta, buf, 10);
       tx_str(buf);
       // PPD - PPS cycle delta - the number of cycles missed/extra since the last PPS.
       tx_pstr(PSTR("\r\nPPE="));
