@@ -160,8 +160,6 @@ double average_phase_error;
 double average_pps_error;
 unsigned char mode;
 unsigned int exit_timer;
-unsigned int last_adc_value;
-int wrap_count;
 volatile unsigned int timer_hibits;
 volatile unsigned long pps_count;
 volatile unsigned char gps_status;
@@ -462,7 +460,6 @@ static void reset_pll() {
   average_pps_error = 0.;
   mode = MODE_START;
   exit_timer = 0;
-  wrap_count = 0;
 }
 
 void main() {
@@ -648,31 +645,43 @@ void main() {
     }
     long pps_cycle_delta = irq_time_span - F_CPU;
 
-    if (labs(pps_cycle_delta) > (F_CPU / 1000000)) { // this would be an error of 10 ppm - impossible
+    long intracycle_delta = pps_cycle_delta % F_CPU;
+    long seconds_delta = pps_cycle_delta / F_CPU;
+
+    if (labs(intracycle_delta) > (F_CPU / 1000000)) { // this would be an error of 10 ppm - impossible
 #ifdef DEBUG
       char buf[16];
       // XXX - an erroneous delta. A delta of more than 10 ppm is reported, but skipped/ignored.
-      tx_pstr(PSTR("XXX="));
-      ltoa(pps_cycle_delta, buf, 10);
+      tx_pstr(PSTR("XXI="));
+      ltoa(intracycle_delta, buf, 10);
+      tx_str(buf);
+      tx_pstr(PSTR("\r\nXXS="));
+      ltoa(seconds_delta, buf, 10);
       tx_str(buf);
       tx_pstr(PSTR("\r\n\r\n"));
 #endif
       continue;
     }
 
+    // If the erroneous delta consists only of whole seconds,
+    // then it's a "missed PPS." That's far less serious.
+    if (seconds_delta != 0) {
+#ifdef DEBUG
+      char buf[10];
+      tx_pstr(PSTR("XXS="));
+      ltoa(seconds_delta, buf, 10);
+      tx_str(buf);
+      tx_pstr(PSTR("\r\n\r\n"));
+#endif
+    }
+
     // the time constant in START mode is the same as FAST mode.
     unsigned int time_constant = mode==MODE_SLOW?TC_SLOW:TC_FAST;
-
-    if (mode != MODE_START) { // we don't track wraps in START mode.
-      if (last_adc_value < 150 && irq_adc_value > 750) wrap_count++;
-      if (last_adc_value > 750 && irq_adc_value < 150) wrap_count--;
-    }
-    last_adc_value = irq_adc_value;
 
     // Since our ADC is 10 bits and the pulse is a microsecond wide we can fudge a little
     // and claim that each ADC count is one nanosecond. So current and average phase error
     // is in nanoseconds and is wrapped.
-    int current_phase_error = (wrap_count * PHASE_ADC_MIDPOINT * 2) +  PHASE_ADC_MIDPOINT - irq_adc_value;
+    int current_phase_error = PHASE_ADC_MIDPOINT - irq_adc_value;
 
     // This is an approximation of a rolling average, but it's good enough
     // for us, because it should not change very much in 1 second.
@@ -681,8 +690,10 @@ void main() {
     average_phase_error += ((double)current_phase_error) / filter_time;
 
     // 1 unit here is 1e9/F_CPU ppb, or 100 ppb.
+    // A missed PPS means that we have to scale the intracycle delta,
+    // because it presumably happened over more than one second.
     average_pps_error -= average_pps_error / filter_time;
-    average_pps_error += ((double)pps_cycle_delta) / filter_time;
+    average_pps_error += ((double)intracycle_delta) / ((seconds_delta + 1) * filter_time);
 
 #ifdef DEBUG
     {
@@ -706,7 +717,7 @@ void main() {
       {
         char buf[8];
         tx_pstr(PSTR("SB="));
-        ltoa(pps_cycle_delta, buf, 10);
+        ltoa(intracycle_delta, buf, 10);
         tx_str(buf);
         tx_pstr(PSTR("\r\nCPE="));
         ltoa(current_phase_error, buf, 10);
@@ -798,11 +809,8 @@ void main() {
       tx_pstr(PSTR("ADC="));
       ltoa(irq_adc_value, buf, 10);
       tx_str(buf);
-      tx_pstr(PSTR("\r\nWC="));
-      ltoa(wrap_count, buf, 10);
-      tx_str(buf);
       tx_pstr(PSTR("\r\nSB="));
-      ltoa(pps_cycle_delta, buf, 10);
+      ltoa(intracycle_delta, buf, 10);
       tx_str(buf);
       // PPD - PPS cycle delta - the number of cycles missed/extra since the last PPS.
       tx_pstr(PSTR("\r\nPPE="));
