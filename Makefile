@@ -35,6 +35,6 @@ flash:	$(OUT).hex
 	$(AVRDUDE) -c $(PROGRAMMER) -p $(CHIP) -U flash:w:$(OUT).hex
 
 fuse:
-	$(AVRDUDE) -c $(PROGRAMMER) -p $(CHIP) -U hfuse:w:0xd4:m -U lfuse:w:0xe0:m -U efuse:w:0xff:m
+	$(AVRDUDE) -c $(PROGRAMMER) -p $(CHIP) -U hfuse:w:0xd5:m -U lfuse:w:0xe0:m -U efuse:w:0xff:m
 
 init:	fuse flash
