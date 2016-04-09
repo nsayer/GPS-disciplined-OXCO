@@ -160,14 +160,18 @@ volatile unsigned char rx_buf[RX_BUF_LEN];
 volatile unsigned char rx_str_len;
 volatile unsigned int irq_adc_value;
 volatile unsigned long irq_time_span;
-#ifdef SERIAL_TX
+#ifdef DEBUG
 volatile unsigned char pdop_buf[5];
-
+#endif
+#ifdef SERIAL_TX
 // serial transmit buffer setup
 volatile char txbuf[TX_BUF_LEN];
 volatile unsigned int txbuf_head, txbuf_tail;
 #endif
 
+// I don't know why my version of AVR libc doesn't have
+// fabs() like it's supposed to. Fortunately, it's pretty easy to
+// write. It's in the includes, but not the library.
 #define fabs MY_fabs
 static inline double fabs(double x) { return x<0?-x:x; }
 
