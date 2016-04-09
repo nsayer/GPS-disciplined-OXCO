@@ -40,7 +40,7 @@
 #include <util/atomic.h>
 
 // 10 MHz.
-#define F_CPU 10000000UL
+#define F_CPU (10000000UL)
 #include <util/delay.h>
 
 // UBRR?_VALUE macros defined here are Used below in serial initialization in main()
@@ -645,8 +645,8 @@ void main() {
     }
     long pps_cycle_delta = irq_time_span - F_CPU;
 
-    long intracycle_delta = pps_cycle_delta % F_CPU;
-    long seconds_delta = pps_cycle_delta / F_CPU;
+    long intracycle_delta = pps_cycle_delta % (long)F_CPU;
+    long seconds_delta = pps_cycle_delta / (long)F_CPU;
 
     if (labs(intracycle_delta) > (F_CPU / 1000000)) { // this would be an error of 10 ppm - impossible
 #ifdef DEBUG
@@ -800,6 +800,18 @@ void main() {
         }
       } else {
         exit_timer = 0;
+      }
+    } else if (mode == MODE_SLOW) {
+      if (fabs(average_phase_error) >= 50.0) {
+          mode = MODE_FAST;
+          time_constant = TC_FAST;
+          exit_timer = 0;
+          // translate the iTerm whenever we change the time constant.
+          double ratio = ((double)TC_FAST)/((double)TC_SLOW);
+          iTerm *= ratio;
+#ifdef DEBUG
+          tx_pstr(PSTR("M_FAST\r\n\r\n"));
+#endif
       }
     }
 #ifdef DEBUG
