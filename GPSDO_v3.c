@@ -131,13 +131,6 @@
 // to land at this value.
 #define PHASE_ADC_MIDPOINT 512
 
-/*
-#define EE_TRIM_LOC ((uint16_t*)0)
-// If the stored EEPROM trim value differs by this much from the present value,
-// then update it. 75 is around 1 ppb or so.
-#define EE_UPDATE_OFFSET (75)
-*/
-
 // Note that if you ever want to parse a longer sentence, be sure to bump this up.
 // But an ATTiny841 only has 1/2K of RAM, so...
 #define RX_BUF_LEN (64)
@@ -562,27 +555,6 @@ void main() {
   if (mcusr_value & _BV(WDRF)) tx_pstr(PSTR("RES_WD\r\n")); // watchdog reset
 #endif
 
-/*
-  // Restore the DAC to the last written value
-  {
-    unsigned int dac_value = eeprom_read_word(EE_TRIM_LOC);
-    if (dac_value == 0xffff) // uninitialized flash
-      dac_value = 0x8000; // default to midrange
-    writeDacValue(dac_value);
-    trim_value = DAC_SIGN * (((long)dac_value) - 0x8000);
-
-#ifdef DEBUG
-    char buf[8];
-    tx_pstr(PSTR("EE=0x"));
-    itoa(dac_value, buf, 16);
-    tx_str(buf);
-    tx_pstr(PSTR("\r\nTV="));
-    dtostrf(trim_value, 7, 2, buf);
-    tx_str(buf);
-    tx_pstr(PSTR("\r\n"));
-#endif
-  }
-*/
   // the default value of the DAC is midpoint, so nothing needs to be done.
   trim_value = 0.;
   last_adj_val = 0.;
@@ -884,16 +856,5 @@ void main() {
       tx_pstr(PSTR("\r\n"));
     }
 #endif
-
-/*
-    // Only write to EEPROM when we're *exactly* dialed in, and
-    // our trim value differs from the recorded one "significantly." 
-    if (fabs(average_phase_error) < 5 && abs(eeprom_read_word(EE_TRIM_LOC) - trim_value) > EE_UPDATE_OFFSET) {
-      eeprom_write_word(EE_TRIM_LOC, trim_value);
-#ifdef DEBUG
-      tx_pstr(PSTR("EEUP\r\n"));
-#endif
-    }
-*/
   }
 }
