@@ -112,7 +112,7 @@
 #define DAMPING 1.75
 
 // our DAC has an inverse slope - lower values mean higher frequencies.
-#define DAC_SIGN (-1)
+#define DAC_SIGN (1)
 
 #define LED_PORT PORTB
 #define LED0 _BV(PORTB1)
@@ -621,13 +621,20 @@ void main() {
     }
     long pps_cycle_delta = irq_time_span - F_CPU;
 
-    long intracycle_delta = pps_cycle_delta % (long)F_CPU;
-    long seconds_delta = pps_cycle_delta / (long)F_CPU;
+    // round to the nearest second. It's impossible for this to
+    // wind up being negative, given reasonably correct GPS behavior.
+    unsigned long seconds_delta = (pps_cycle_delta + F_CPU/2) / F_CPU;
+    // This is what's left when the whole seconds are accounted for.
+    // The result of all this is that a delta of F_CPU - 1 results
+    // not in a seconds_delta of 0 and an intracycle_delta of F_CPU-1,
+    // but rather a seconds_delta of 1 and an intracycle delta of -1,
+    // which is a much better description of the behavior.
+    long intracycle_delta = pps_cycle_delta - ((long)(seconds_delta * F_CPU));
 
     if (labs(intracycle_delta) > (F_CPU / 1000000)) { // this would be an error of 10 ppm - impossible
 #ifdef DEBUG
       char buf[16];
-      // XXX - an erroneous delta. A delta of more than 10 ppm is reported, but skipped/ignored.
+      // XXI - an erroneous intracycle delta. A delta of more than 10 ppm is reported, but skipped/ignored.
       tx_pstr(PSTR("XXI="));
       ltoa(intracycle_delta, buf, 10);
       tx_str(buf);
