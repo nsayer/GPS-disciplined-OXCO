@@ -111,7 +111,8 @@
 // (that is, the last time the FLL determined the starting DAC value).
 #define DAMPING 1.75
 
-// our DAC has an inverse slope - lower values mean higher frequencies.
+// our DAC has a positive slope - higher values mean higher frequencies.
+// If you have an inverse DAC slope, set this to -1.
 #define DAC_SIGN (1)
 
 #define LED_PORT PORTB
