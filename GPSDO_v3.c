@@ -58,7 +58,10 @@
 #define DEBUG
 
 // Turn this on to send the WAAS enable sentence at startup.
-#define WAAS
+//#define WAAS
+
+// Define this for the OH300 variant, undef for DOT050V
+#define OH300
 
 #if defined(DEBUG) || defined(WAAS)
 // define this to include the serial transmit infrastructure at all
@@ -90,7 +93,11 @@
 //
 // The gain is how much we have to nudge the DAC to make 1 ns/sec
 // phase change-rate. That is, to alter the frequency by 1 ppb.
+#ifdef OH300
 #define GAIN 67
+#else
+#define GAIN 5
+#endif
 //
 // In the initial FLL mode, the calculus is different. We multiply
 // this value by the error in PPB to determine the adjustment to be
@@ -98,13 +105,23 @@
 // from the FLL is the base against which the PLL applies adjustment
 // values. In principle this value should be 0.015, but we want the
 // FLL to be more aggressive.
+#ifdef OH300
 #define START_GAIN .25
+#else
+#define START_GAIN .1
+#endif
 //
 // What is our loop time constant? We use two different time constants - a
 // faster one when we're outside of a certain range, and a slower
 // one when we're dialed in.
+#ifdef OH300
 #define TC_FAST 50
 #define TC_SLOW 200
+#else
+#define TC_FAST 25
+#define TC_SLOW 100
+#endif
+
 //
 // The damping factor is how much we reduce the influence of the integral
 // term - that is, the accumulated error since the last loop startup
@@ -149,7 +166,6 @@
 unsigned int last_dac_value;
 double iTerm;
 double trim_value;
-double last_adj_val;
 double average_phase_error;
 double average_pps_error;
 unsigned char mode;
@@ -257,10 +273,8 @@ ISR(TIMER1_CAPT_vect) {
 
   irq_adc_value = adc_value;
 
-  unsigned long time_span = timer_val - last_timer_val;
+  irq_time_span = timer_val - last_timer_val;
   last_timer_val = timer_val;
-
-  irq_time_span = time_span;
 
   pps_count++;
 
@@ -450,8 +464,7 @@ static void reset_pll() {
   if (mode != MODE_START) {
     // if we're exiting the PLL, then at least take the most recent
     // adjustment value we had and add it back to the trim value for free-running.
-    trim_value -= last_adj_val;
-    last_adj_val = 0.;
+    trim_value -= iTerm / (mode == MODE_FAST?TC_FAST:TC_SLOW);
   }
   iTerm = 0.;
   average_phase_error = 0.;
@@ -562,7 +575,6 @@ void main() {
 
   // the default value of the DAC is midpoint, so nothing needs to be done.
   trim_value = 0.;
-  last_adj_val = 0.;
 
   sei();
 
@@ -770,7 +782,7 @@ void main() {
         tx_pstr(PSTR("\r\n"));
       }
 #endif
-      if (fabs(average_phase_error) <= 1.0) {
+      if (fabs(average_phase_error) <= 5.0) {
         if (++exit_timer >= 60) {
           mode = MODE_SLOW;
           time_constant = TC_SLOW;
@@ -833,10 +845,15 @@ void main() {
     // And now, throw away the fractional part for writing to the DAC.
     unsigned int dac_value = (int)(DAC_SIGN * (trim_value - adj_val)) + 0x8000;
 
-    // save this for use when/if we revert to the START mode (GPS unlock).
-    last_adj_val = adj_val;
-
     writeDacValue(dac_value);
+
+    // If the iTerm is accumulating too much correction, start off-loading
+    // some of it to the trim_value.
+    long iTerm_modulo = 1000 * time_constant;
+    if (fabs(iTerm) > iTerm_modulo) {
+        iTerm -= (double)((iTerm<0)?-1:1) * iTerm_modulo;
+        trim_value += 1000;
+    }
 
 #ifdef DEBUG
     {
