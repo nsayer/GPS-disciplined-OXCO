@@ -862,7 +862,7 @@ void main() {
         tx_str(buf);
 #endif
         iTerm -= (double)((iTerm<0)?-1:1) * iTerm_modulo;
-        trim_value += 1000;
+        trim_value += ((iTerm<0)?-1:1) * 1000;
 #ifdef DEBUG
         tx_pstr(PSTR("\r\nA_iT="));
         dtostrf(iTerm, 7, 2, buf);
