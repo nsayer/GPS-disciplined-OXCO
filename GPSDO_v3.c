@@ -118,7 +118,7 @@
 #define TC_FAST 50
 #define TC_SLOW 200
 #else
-#define TC_FAST 25
+#define TC_FAST 50
 #define TC_SLOW 100
 #endif
 
@@ -849,10 +849,29 @@ void main() {
 
     // If the iTerm is accumulating too much correction, start off-loading
     // some of it to the trim_value.
-    long iTerm_modulo = 1000 * time_constant;
+    double iTerm_modulo = 1000. * time_constant;
     if (fabs(iTerm) > iTerm_modulo) {
+#ifdef DEBUG
+        char buf[10];
+        tx_pstr(PSTR("RED\r\n"));
+        tx_pstr(PSTR("B_iT="));
+        dtostrf(iTerm, 7, 2, buf);
+        tx_str(buf);
+        tx_pstr(PSTR("\r\nB_TV="));
+        dtostrf(trim_value, 7, 2, buf);
+        tx_str(buf);
+#endif
         iTerm -= (double)((iTerm<0)?-1:1) * iTerm_modulo;
         trim_value += 1000;
+#ifdef DEBUG
+        tx_pstr(PSTR("\r\nA_iT="));
+        dtostrf(iTerm, 7, 2, buf);
+        tx_str(buf);
+        tx_pstr(PSTR("\r\nA_TV="));
+        dtostrf(trim_value, 7, 2, buf);
+        tx_str(buf);
+        tx_pstr(PSTR("\r\n\r\n"));
+#endif
     }
 
 #ifdef DEBUG
