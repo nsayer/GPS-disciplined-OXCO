@@ -34,5 +34,6 @@ With DEBUG turned on, you should see the following items on the serial output:
 * iT= - the I term of the PI loop (during PLL)
 * pT= - the P term of the PI loop (during PLL)
 * PD= - the PDOP value reported by the GPS module in the last $GPGSA sentence.
+* RED= - If the iTerm gets too large, it will be reduced, by off-loading some of its value into TV. Concurrent with this log, B_iT and B_TV will show the values before adjustment, and A_iT and A_TV will show the values after.
 
 The author would like to acknowledge the generous assistance of Jim Harman and Tom Van Baak in the development of this project.

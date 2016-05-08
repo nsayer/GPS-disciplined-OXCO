@@ -68,8 +68,6 @@
 #define SERIAL_TX
 #endif
 
-// the PI controller factors. These are as of yet untuned guesses.
-//
 // To determine the tuning step - that is, the frequency difference between
 // adjacent DAC values (in theory), you multiply the control voltage slope
 // of the oscillator (ppm per volt) by the DAC step voltage (volts per step).
@@ -77,15 +75,17 @@
 //
 // Because of the multitude of different error sources, your actual tuning
 // granularity target should be at least a half an order of magnitude higher
-// than this.
+// than your desired frequency stability.
 //
 // The tuning step for the OH300 variant is approximately 12 ppt.
 // The DAC output range is 2.7 volts (82% of 3.3v) and the tuning
 // range across that is 0.8ppm. The DAC is 16 bits,
 // so .8ppm / 65536 is ~12 ppt. The target here is 0.1 ppb.
 //
-// We expect F_CPU counts between each PPS interrupt.
-// Every count off represents an error of 1e9 / F_CPU ppb (or ns/sec).
+// The tuning step for the DOT050V variant is approximately 200 ppt.
+// The DAC output range is 1.65 volts (50% of 3.3v) and the tuning range
+// across that is 12.2 ppm (60% of 20ppm). The DAC, again, is 16 bits,
+// so that's ~180 ppt. The target here is 1 ppb.
 //
 // The ADC measures a phase range of 1 us, which we arbitrarily
 // devide at a midpoint for a range of +/- 512 ns (it's not exactly
@@ -99,17 +99,14 @@
 #define GAIN 5
 #endif
 //
-// In the initial FLL mode, the calculus is different. We multiply
-// this value by the error in PPB to determine the adjustment to be
-// made to the DAC. When we upshift into PLL, the final trim value
-// from the FLL is the base against which the PLL applies adjustment
-// values. In principle this value should be 0.015, but we want the
-// FLL to be more aggressive.
-#ifdef OH300
-#define START_GAIN .25
-#else
-#define START_GAIN .1
-#endif
+// In the initial FLL mode, the calculus is different.
+// We expect F_CPU counts between each PPS interrupt.
+// Every count off represents an error of 1e9 / F_CPU ppb (or ns/sec).
+// At 10 MHz, that's 100 ppb. We multiply START_GAIN by the error in
+// PPB to determine the adjustment to be made to the DAC. When we
+// upshift into PLL, the final trim value from the FLL is the base
+// against which the PLL applies adjustment values.
+#define START_GAIN (GAIN / 100.0)
 //
 // What is our loop time constant? We use two different time constants - a
 // faster one when we're outside of a certain range, and a slower
@@ -135,6 +132,8 @@
 #define LED_PORT PORTB
 #define LED0 _BV(PORTB1)
 #define LED1 _BV(PORTB2)
+#define LED_DDR DDRB
+#define LED_DDR_MSK (_BV(DDRB1) | _BV(DDRB2))
 
 // We don't actually need to read this pin. It triggers a TIMER1_CAPT interrupt.
 //#define PPS_PORT PINA
@@ -144,6 +143,8 @@
 #define DAC_CS _BV(PORTA3)
 #define DAC_DO _BV(PORTA5)
 #define DAC_CLK _BV(PORTA4)
+#define DAC_DDR DDRA
+#define DAC_DDR_MSK (_BV(DDRA3) | _BV(DDRA4) | _BV(DDRA5))
 
 // This is an arbitrary midpoint value. We will attempt to coerce the phase error
 // to land at this value.
@@ -151,8 +152,8 @@
 
 // Note that if you ever want to parse a longer sentence, be sure to bump this up.
 // But an ATTiny841 only has 1/2K of RAM, so...
-#define RX_BUF_LEN (64)
-#define TX_BUF_LEN (96)
+#define RX_BUF_LEN (96)
+#define TX_BUF_LEN (128)
 
 // The start mode watches the cycle count error over a 10 second window, and
 // adjusts the DAC until a minute goes by without any errors.
@@ -508,13 +509,16 @@ void main() {
   UCSR0C = _BV(UCSZ00) | _BV(UCSZ01);
 
   // set up the LED port
-  DDRB = _BV(DDRB1) | _BV(DDRB2);
-  PORTB = 0; // Turn off both LEDs
+  PORTB &= ~(LED0 | LED1); // Turn off both LEDs
+  LED_DDR = 0;
+  LED_DDR |= LED_DDR_MSK;
+
   // DDA7 is 0 to make PA7 an input for ICP
   // set up the DAC port
   // set CS high on the DAC *before* setting the direction. 
   DAC_PORT |= DAC_CS;
-  DDRA = _BV(DDRA3) | _BV(DDRA4) | _BV(DDRA5);
+  DAC_DDR = 0;
+  DAC_DDR |= DAC_DDR_MSK;
 
   // Set up timer1
   TCCR1A = 0; // Normal mode
@@ -644,10 +648,10 @@ void main() {
     // which is a much better description of the behavior.
     long intracycle_delta = pps_cycle_delta - ((long)(seconds_delta * F_CPU));
 
-    if (labs(intracycle_delta) > (F_CPU / 1000000)) { // this would be an error of 10 ppm - impossible
+    if (labs(intracycle_delta) / (seconds_delta + 1) > (F_CPU / 100000)) { // this would be an error of 100 ppm - impossible
 #ifdef DEBUG
       char buf[16];
-      // XXI - an erroneous intracycle delta. A delta of more than 10 ppm is reported, but skipped/ignored.
+      // XXI - an erroneous intracycle delta. A delta of more than 100 ppm is reported, but skipped/ignored.
       tx_pstr(PSTR("XXI="));
       ltoa(intracycle_delta, buf, 10);
       tx_str(buf);
@@ -813,11 +817,7 @@ void main() {
 #ifdef DEBUG
     {
       char buf[8];
-      // ADC - raw ADC reading from the phase comparator.
-      tx_pstr(PSTR("ADC="));
-      ltoa(irq_adc_value, buf, 10);
-      tx_str(buf);
-      tx_pstr(PSTR("\r\nSB="));
+      tx_pstr(PSTR("SB="));
       ltoa(intracycle_delta, buf, 10);
       tx_str(buf);
       // PPD - PPS cycle delta - the number of cycles missed/extra since the last PPS.
