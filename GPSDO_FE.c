@@ -84,7 +84,7 @@
 // phase change-rate. That is, to alter the frequency by 1 ppb.
 //
 // In this case, however, the gain is too high. A resolution of
-// 17E-15 (or even 850E-15) is way beyond the hardware we have to
+// 17E-15 (or even 860E-15) is beyond the hardware we have to
 // measure it. Throwing away some of the low resolution bits makes
 // the math less problematic (a float can only have so many bits
 // of precision).
@@ -102,12 +102,12 @@
 // base against which the PLL applies adjustment values.
 #define START_GAIN (GAIN / 100.0)
 //
-// What is our loop time constant? We use two different time constants - a
+// What is our loop time constant? We use three different time constants - a
 // faster one when we're outside of a certain range, and a slower
 // one when we're dialed in.
 #define TC_FAST 100
-#define TC_MED 1800 // 1/2 hour
-#define TC_SLOW 14400 // 4 hours
+#define TC_MED 1800 // 1 hour
+#define TC_SLOW 7200 // 2 hours
 
 //
 // The damping factor is how much we reduce the influence of the integral
@@ -162,6 +162,7 @@ double average_phase_error;
 double average_pps_error;
 unsigned char mode;
 unsigned int exit_timer;
+unsigned int enter_timer;
 volatile unsigned int timer_hibits;
 volatile unsigned long pps_count;
 volatile unsigned char gps_locked;
@@ -804,7 +805,7 @@ skip:
 
     // This is an approximation of a rolling average, but it's good enough
     // for us, because it should not change very much in 1 second.
-    unsigned int filter_time = time_constant / 4;
+    unsigned int filter_time = time_constant / 10;
     average_phase_error -= average_phase_error / filter_time;
     average_phase_error += ((double)current_phase_error) / filter_time;
 
@@ -899,10 +900,9 @@ skip:
         tx_pstr(PSTR("\r\n"));
       }
 #endif
-      // phase tolerance has to increase with higher TC.
-      if (fabs(average_phase_error) <= 5.0 * mode) {
+      if (fabs(average_phase_error) <= 5.0) {
         // stability has to increase with the square of mode
-        if (++exit_timer >= 100 * mode * mode) {
+        if (++exit_timer >= 200 * mode * mode) {
           exit_timer = 0;
           mode++;
           time_constant = mode_to_tc(mode);
@@ -920,7 +920,11 @@ skip:
     }
     if (mode != MODE_FAST) {
       // check for downgrade
-      if (fabs(average_phase_error) >= 50.0 * mode) {
+      if (enter_timer > 0) {
+          // if we just downgraded, wait a bit to see if the downgrade "took"
+          enter_timer--;
+      } else if (fabs(average_phase_error) >= 50.0 * mode) {
+          enter_timer = 100 * mode;
           mode--;
           time_constant = mode_to_tc(mode);
           exit_timer = 0;
