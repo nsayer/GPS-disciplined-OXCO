@@ -843,7 +843,7 @@ void main() {
     // and the adj_val we've computed will be relative to that.
 
     // And now, throw away the fractional part for writing to the DAC.
-    unsigned int dac_value = (int)(DAC_SIGN * (trim_value - adj_val)) + 0x8000;
+    unsigned int dac_value = (int)(DAC_SIGN * (trim_value - adj_val) + 0.5) + 0x8000;
 
     writeDacValue(dac_value);
 
