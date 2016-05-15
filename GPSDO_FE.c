@@ -133,8 +133,9 @@
 // it has a physics lock. Doing anything while this bit is high is futile.
 #define RDY_PORT PINA
 #define OSC_RDY _BV(PINA3)
-#define RDY_PU_PORT PORTA
-#define OSC_RDY_PU _BV(PORTA3)
+#define RDY_PU_PORT PUEA
+// Oddly enough, the definitions for PUEAx and PUEBx are missing.
+#define OSC_RDY_PU _BV(3)
 
 // This is an arbitrary midpoint value. We will attempt to coerce the phase error
 // to land at this value.
@@ -965,7 +966,7 @@ skip:
     // and the adj_val we've computed will be relative to that.
 
     // And now, throw away the fractional part for writing to the DAC.
-    long dac_value = (long)(DAC_SIGN * (trim_value - adj_val));
+    long dac_value = (long)(DAC_SIGN * (trim_value - adj_val) + 0.5);
 
     writeDacValue(dac_value);
 
