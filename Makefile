@@ -7,8 +7,11 @@ PROGRAMMER = usbtiny
 #CHIP = attiny4313
 #OUT=GPSDO
 # v3
+#CHIP = attiny841
+#OUT=GPSDO_v3
+# FE
 CHIP = attiny841
-OUT=GPSDO_v3
+OUT=GPSDO_FE
 
 CC = avr-gcc
 OBJCPY = avr-objcopy

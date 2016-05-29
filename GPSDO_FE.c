@@ -106,7 +106,7 @@
 // faster one when we're outside of a certain range, and a slower
 // one when we're dialed in.
 #define TC_FAST 100
-#define TC_MED 1800 // 1 hour
+#define TC_MED 1800 // 0.5 hour
 #define TC_SLOW 7200 // 2 hours
 
 //
@@ -171,10 +171,12 @@ volatile unsigned char rx_buf[RX_BUF_LEN];
 volatile unsigned char rx_str_len;
 volatile unsigned int irq_adc_value;
 volatile unsigned long irq_time_span;
-#ifdef DEBUG
-volatile unsigned char pdop_buf[5];
 unsigned char last_osc_locked;
 unsigned char last_gps_locked;
+#ifdef DEBUG
+volatile unsigned char pdop_buf[5];
+volatile unsigned char time_buf[7];
+volatile unsigned char date_buf[7];
 #endif
 #ifdef SERIAL_TX
 // serial transmit buffer setup
@@ -414,39 +416,47 @@ static inline void handleGPS() {
     return; // bad checksum.
   }
   
-  if (!strncmp_P((const char*)rx_buf, PSTR("$GPGSA"), 6)) {
+  char *ptr = (char *)rx_buf;
+  if (!strncmp_P((const char*)rx_buf, PSTR("$GPRMC"), 6)) {
+    // $GPRMC,172313.000,A,xxxx.xxxx,N,xxxxx.xxxx,W,0.01,180.80,260516,,,D*74\x0d\x0a
+#ifdef DEBUG
+    ptr = strchr((const char *)ptr, ',');
+    if (ptr == NULL) return; // not enough commas
+    ptr++; // skip over it
+    strncpy((char *)time_buf, ptr, 6);
+    time_buf[sizeof(time_buf) - 1] = 0;
+    for(i = 0; i < 8; i++) {
+      ptr = strchr((const char *)ptr, ',');
+      if (ptr == NULL) return; // not enough commas
+      ptr++; // skip over it
+    }
+    strncpy((char *)date_buf, ptr, 6);
+    date_buf[sizeof(date_buf) - 1] = 0;
+#endif
+  } else if (!strncmp_P((const char*)rx_buf, PSTR("$GPGSA"), 6)) {
     // $GPGSA,A,3,02,06,12,24,25,29,,,,,,,1.61,1.33,0.90*01
-    unsigned char *ptr = (unsigned char *)rx_buf;
     for(i = 0; i < 2; i++) {
-      ptr = (unsigned char *)strchr((const char *)ptr, ',');
+      ptr = strchr((const char *)ptr, ',');
       if (ptr == NULL) {
         return; // not enough commas
       }
       ptr++; // skip over it
     }
-    char gps_now_valid = (*ptr == '3')?1:0; // The ?: is just in case some compiler decides true is some value other than 1.
+    gps_locked = (*ptr == '3');
 #ifdef DEBUG
     // continue parsing to find the PDOP value
     for(i = 2; i < 15; i++) {
-      ptr = (unsigned char *)strchr((const char *)ptr, ',');
+      ptr = strchr((const char *)ptr, ',');
       if (ptr == NULL) {
         return; // not enough commas
       }
       ptr++; // skip over it
     }
-    unsigned char len = ((unsigned char*)strchr((const char *)ptr, ',')) - ptr;
+    unsigned char len = (strchr((const char *)ptr, ',')) - ptr;
     if (len > sizeof(pdop_buf) - 1) len = sizeof(pdop_buf) - 1; // truncate if too long
     memcpy((void*)pdop_buf, ptr, len);
     pdop_buf[len] = 0; // null terminate
 #endif
-    if (gps_now_valid == gps_locked) {
-      return; // no change in status
-    }
-    gps_locked = gps_now_valid;
-    if (!gps_locked) {
-      // Restart the error window for every GPS lock interval. We don't track drift during holdover.
-      reset_pll();
-    }
   }
 }
 
@@ -564,9 +574,12 @@ void main() {
   reset_pll();
   gps_locked = 0;
   rx_str_len = 0;
-#ifdef DEBUG
   last_osc_locked = 0xff; // none of the above
   last_gps_locked = 0xff; // none of the above
+#ifdef DEBUG
+  // initialize to ""
+  *date_buf = 0;
+  *time_buf = 0;
 #endif
 #ifdef SERIAL_TX
   *pdop_buf = 0; // null terminate
@@ -658,26 +671,38 @@ skip:
 
     unsigned char osc_locked = (RDY_PORT & OSC_RDY) == 0;
 
-#ifdef DEBUG
     // with debug firmware, the 0 bit is the GPS status and the 1 bit is
     // whether we've logged that status since the last change or not.
     if (gps_locked != last_gps_locked) {
       last_gps_locked = gps_locked;
       if (gps_locked) {
+#ifdef DEBUG
         tx_pstr(PSTR("G_LK\r\n"));
+#endif
       } else {
+#ifdef DEBUG
         tx_pstr(PSTR("G_UN\r\n"));
+#endif
+        // Whenever the GPS unlocks, back down one PLL time constant step. We don't
+	// attempt to track how long we've held over, but a faster TC means less averaging,
+        // which means we'll slew back into correctness faster.
+        if (mode > 0) mode--;
       }
     }
     if (osc_locked != last_osc_locked) {
       last_osc_locked = osc_locked;
       if (osc_locked) {
+#ifdef DEBUG
         tx_pstr(PSTR("FE_LK\r\n"));
+#endif
       } else {
+#ifdef DEBUG
         tx_pstr(PSTR("FE_UN\r\n"));
+#endif
+        writeDacValue(0);
+        reset_pll();
       }
     }
-#endif
 
     if (osc_locked && (CLKCR & 0x1f)) {
       // The oscillator is now locked, and we're still running from the 8 MHz
@@ -750,6 +775,23 @@ skip:
     // If we haven't had a PPS event since we were last here, we're done.
     if (last_pps_count == pps_count) continue;
     last_pps_count = pps_count;
+
+#ifdef DEBUG
+    {
+      char temp_date_buf[7], temp_time_buf[7];
+      ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+        strcpy(temp_date_buf, (char *)date_buf);
+        strcpy(temp_time_buf, (char *)time_buf);
+      }
+      if (strlen(temp_date_buf) > 0 && strlen(temp_time_buf) > 0) {
+        tx_pstr(PSTR("DT="));
+        tx_str(temp_date_buf);
+        tx_char(' ');
+        tx_str(temp_time_buf);
+        tx_pstr(PSTR("\r\n"));
+      }
+    }
+#endif
 
     if (unlocked) {
 #ifdef DEBUG
@@ -849,8 +891,8 @@ skip:
         tx_pstr(PSTR("\r\nPPE="));
         dtostrf(average_pps_error, 7, 2, buf);
         tx_str(buf);
-        tx_pstr(PSTR("\r\nTV="));
-        dtostrf(trim_value, 7, 2, buf);
+        tx_pstr(PSTR("\r\nDAC="));
+        ltoa((long)trim_value, buf, 10);
         tx_str(buf);
         tx_pstr(PSTR("\r\nET="));
         ltoa(exit_timer, buf, 10);
@@ -883,8 +925,7 @@ skip:
       tx_pstr(PSTR("PPE="));
       dtostrf(average_pps_error, 7, 2, buf);
       tx_str(buf);
-      tx_pstr(PSTR("\r\nM_START\r\n"));
-      tx_pstr(PSTR("\r\n"));
+      tx_pstr(PSTR("\r\nM_START\r\n\r\n"));
 #endif
       reset_pll();
       continue;
@@ -943,7 +984,6 @@ skip:
       tx_pstr(PSTR("SB="));
       ltoa(intracycle_delta, buf, 10);
       tx_str(buf);
-      // PPD - PPS cycle delta - the number of cycles missed/extra since the last PPS.
       tx_pstr(PSTR("\r\nPPE="));
       dtostrf(average_pps_error, 7, 2, buf);
       tx_str(buf);
@@ -990,6 +1030,7 @@ skip:
       tx_pstr(PSTR("\r\niT="));
       dtostrf(iTerm, 7, 2, buf);
       tx_str(buf);
+#if 0
       // AV = Adjustment Value - the delta being applied right now to the TP
       tx_pstr(PSTR("\r\nAV="));
       dtostrf(adj_val, 7, 2, buf);
@@ -999,6 +1040,7 @@ skip:
       tx_pstr(PSTR("\r\nTV="));
       dtostrf(trim_value, 7, 2, buf);
       tx_str(buf);
+#endif
       // DAC = DAC Value - the actual value written to the DAC
       tx_pstr(PSTR("\r\nDAC="));
       ltoa(dac_value, buf, 10);
