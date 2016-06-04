@@ -508,8 +508,6 @@ void main() {
   UBRR0L = UBRRL_VALUE;
   UBRR1H = UBRRH_VALUE;
   UBRR1L = UBRRL_VALUE;
-#undef F_CPU
-#define F_CPU (10000000UL)
 #if USE_2X
   UCSR0A = _BV(U2X0);
   UCSR1A = _BV(U2X1);
@@ -517,6 +515,8 @@ void main() {
   UCSR0A = 0;
   UCSR1A = 0;
 #endif
+#undef F_CPU
+#define F_CPU (10000000UL)
 
 // If you need to initialize the GPS, then set TXEN, transmit
 // whatever is necessary, then clear TXEN. That will make the
