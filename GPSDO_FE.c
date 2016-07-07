@@ -1017,8 +1017,9 @@ skip:
 #ifdef DEBUG
         tx_pstr(PSTR("RED\r\n"));
 #endif
-        iTerm -= (double)((iTerm<0)?-1:1) * iTerm_modulo;
-        trim_value += ((iTerm<0)?-1:1) * 1000;
+        int sign = (iTerm < 0)?-1:1;
+        iTerm -= sign * iTerm_modulo;
+        trim_value += sign * 1000;
     }
 
 #ifdef DEBUG
