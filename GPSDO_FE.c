@@ -487,6 +487,14 @@ static void reset_pll() {
   exit_timer = 0;
 }
 
+static void downgrade_mode() {
+  enter_timer = 100 * mode;
+  mode--;
+  // translate the iTerm whenever we change the time constant.
+  double ratio = ((double)mode_to_tc(mode))/((double)mode_to_tc(mode + 1));
+  iTerm *= ratio;
+}
+
 void main() {
   // This must be done as early as possible to prevent the watchdog from biting during reset.
   unsigned char mcusr_value = MCUSR;
@@ -686,7 +694,9 @@ skip:
         // Whenever the GPS unlocks, back down one PLL time constant step. We don't
 	// attempt to track how long we've held over, but a faster TC means less averaging,
         // which means we'll slew back into correctness faster.
-        if (mode > 0) mode--;
+        if (mode > 0) {
+          downgrade_mode();
+        }
       }
     }
     if (osc_locked != last_osc_locked) {
@@ -948,7 +958,6 @@ skip:
           exit_timer = 0;
           mode++;
           time_constant = mode_to_tc(mode);
-          exit_timer = 0;
           // translate the iTerm whenever we change the time constant.
           double ratio = ((double)time_constant)/((double)mode_to_tc(mode - 1));
           iTerm *= ratio;
@@ -966,13 +975,7 @@ skip:
           // if we just downgraded, wait a bit to see if the downgrade "took"
           enter_timer--;
       } else if (fabs(average_phase_error) >= 50.0 * mode) {
-          enter_timer = 100 * mode;
-          mode--;
-          time_constant = mode_to_tc(mode);
-          exit_timer = 0;
-          // translate the iTerm whenever we change the time constant.
-          double ratio = ((double)time_constant)/((double)mode_to_tc(mode+1));
-          iTerm *= ratio;
+          downgrade_mode();
 #ifdef DEBUG
           tx_pstr(PSTR("M_DN\r\n\r\n"));
 #endif
