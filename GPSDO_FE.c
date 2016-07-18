@@ -551,9 +551,9 @@ void main() {
   DDRB |= LED_DDR;
   PORTB &= ~(LED0 | LED1); // Turn off both LEDs
 
-  // DDA7 is 0 to make PA7 an input for ICP
-  // DDA6 is unused (other than for programming)
-  // DDA3 is 0 to make PA3 an input for OSC_RDRY
+  // DDA7 is 0 to make PA7 an input for ICP.
+  // DDA6 is unused (other than for programming).
+  // DDA3 is 0 to make PA3 an input for OSC_RDRY.
   // The two serial ports will override the DD register.
   // DDA0 will be overridden by the ADC (below).
   // So at the end of all of that...
@@ -625,6 +625,7 @@ void main() {
   sei();
 
 #ifdef DEBUG
+  tx_pstr(PSTR("\r\n\r\nSTART\r\n"));
   // one and only one of these should always be printed
   if (mcusr_value & _BV(PORF)) tx_pstr(PSTR("RES_PO\r\n")); // power-on reset
   if (mcusr_value & _BV(EXTRF)) tx_pstr(PSTR("RES_EXT\r\n")); // external reset
