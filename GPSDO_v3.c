@@ -108,12 +108,13 @@
 // against which the PLL applies adjustment values.
 #define START_GAIN (GAIN / 100.0)
 //
-// What is our loop time constant? We use two different time constants - a
-// faster one when we're outside of a certain range, and a slower
-// one when we're dialed in.
+// What is our loop time constant? We use different time constants -
+// faster ones when we're outside of a certain range, and slower
+// ones when we're dialed in.
 #ifdef OH300
-#define TC_FAST 50
-#define TC_SLOW 200
+#define TC_FAST 100
+#define TC_MED 600
+#define TC_SLOW 900
 #else
 #define TC_FAST 50
 #define TC_SLOW 100
@@ -162,7 +163,12 @@
 // The FAST and SLOW modes both use the PI loop on phase alone, but with
 // the FAST and SLOW time constants, respectively.
 #define MODE_FAST 1
+#ifdef TC_MED
+#define MODE_MED 2
+#define MODE_SLOW 3
+#else
 #define MODE_SLOW 2
+#endif
 
 unsigned int last_dac_value;
 double iTerm;
@@ -472,17 +478,41 @@ static inline void handleGPS() {
   }
 }
 
+static unsigned int mode_to_tc(const unsigned char mode) {
+  switch(mode) {
+    case MODE_START: // FLL mode, but we use fast averaging times
+    case MODE_FAST:
+      return TC_FAST;
+#ifdef TC_MED
+    case MODE_MED: 
+      return TC_MED;
+#endif
+    case MODE_SLOW:
+      return TC_SLOW;
+    default:
+      return 0;
+  } 
+}
+
 static void reset_pll() {
   if (mode != MODE_START) {
     // if we're exiting the PLL, then at least take the most recent
     // adjustment value we had and add it back to the trim value for free-running.
-    trim_value -= iTerm / (mode == MODE_FAST?TC_FAST:TC_SLOW);
+    trim_value -= iTerm / mode_to_tc(mode);
   }
   iTerm = 0.;
   average_phase_error = 0.;
   average_pps_error = 0.;
   mode = MODE_START;
   exit_timer = 0;
+}
+
+static void downgrade_mode() {
+  mode--;
+  exit_timer = 0;
+  // translate the iTerm whenever we change the time constant.
+  double ratio = ((double)mode_to_tc(mode))/((double)mode_to_tc(mode + 1));
+  iTerm *= ratio;
 }
 
 void main() {
@@ -585,7 +615,7 @@ void main() {
 #endif
 
 #ifdef DEBUG
-  tx_pstr(PSTR("START\r\n"));
+  tx_pstr(PSTR("\r\n\r\nSTART\r\n"));
   // one and only one of these should always be printed
   if (mcusr_value & _BV(PORF)) tx_pstr(PSTR("RES_PO\r\n")); // power-on reset
   if (mcusr_value & _BV(EXTRF)) tx_pstr(PSTR("RES_EXT\r\n")); // external reset
@@ -617,7 +647,9 @@ void main() {
         // Whenever the GPS unlocks, back down one PLL time constant step. We don't
 	// attempt to track how long we've held over, but a faster TC means less averaging,
         // which means we'll slew back into correctness faster.
-        if (mode > 0) mode--;
+        if (mode > 0) {
+          downgrade_mode();
+        }
       }
     }
 
@@ -713,7 +745,7 @@ void main() {
     }
 
     // the time constant in START mode is the same as FAST mode.
-    unsigned int time_constant = mode==MODE_SLOW?TC_SLOW:TC_FAST;
+    unsigned int time_constant = mode_to_tc(mode);
 
     // Since our ADC is 10 bits and the pulse is a microsecond wide we can fudge a little
     // and claim that each ADC count is one nanosecond. So current and average phase error
@@ -765,12 +797,6 @@ void main() {
         tx_pstr(PSTR("\r\nPPE="));
         dtostrf(average_pps_error, 7, 2, buf);
         tx_str(buf);
-        tx_pstr(PSTR("\r\nAV="));
-        dtostrf(adj_val, 7, 2, buf);
-        tx_str(buf);
-        tx_pstr(PSTR("\r\nTV="));
-        dtostrf(trim_value, 7, 2, buf);
-        tx_str(buf);
         tx_pstr(PSTR("\r\nDAC=0x"));
         ltoa(dac_value, buf, 16);
         tx_str(buf);
@@ -784,7 +810,7 @@ void main() {
       if (fabs(average_pps_error) <= 0.1) {
         // Once the PPS error is under control, try to get the phase near zero before starting
         // the PLL. But don't try for longer than 20 minutes before giving up.
-        if ((++exit_timer >= 60 && fabs(average_phase_error) <= 20.0) || exit_timer >= 1200) {
+        if ((++exit_timer >= 60 && fabs(average_phase_error) <= 20.0) || exit_timer >= 600) {
           mode = MODE_FAST;
           exit_timer = 0;
 #ifdef DEBUG
@@ -811,7 +837,8 @@ void main() {
       continue;
     }
 
-    if (mode == MODE_FAST) {
+    // Test for possible upgrade if we're not maxed out
+    if (mode != MODE_SLOW) {
 #ifdef DEBUG
       {
         char buf[8];
@@ -822,30 +849,25 @@ void main() {
       }
 #endif
       if (fabs(average_phase_error) <= 5.0) {
-        if (++exit_timer >= 60) {
-          mode = MODE_SLOW;
-          time_constant = TC_SLOW;
+        if (++exit_timer >= 200 * mode * mode) {
+          mode++;
+          time_constant = mode_to_tc(mode);
           exit_timer = 0;
           // translate the iTerm whenever we change the time constant.
-          double ratio = ((double)TC_SLOW)/((double)TC_FAST);
+          double ratio = ((double)mode_to_tc(mode))/((double)mode_to_tc(mode - 1));
           iTerm *= ratio;
 #ifdef DEBUG
-          tx_pstr(PSTR("M_SLOW\r\n\r\n"));
+          tx_pstr(PSTR("M_UP\r\n\r\n"));
 #endif
         }
       } else {
         exit_timer = 0;
       }
-    } else if (mode == MODE_SLOW) {
-      if (fabs(average_phase_error) >= 50.0) {
-          mode = MODE_FAST;
-          time_constant = TC_FAST;
-          exit_timer = 0;
-          // translate the iTerm whenever we change the time constant.
-          double ratio = ((double)TC_FAST)/((double)TC_SLOW);
-          iTerm *= ratio;
+    } else if (mode != MODE_FAST) { // Test for possible downgrade
+      if (fabs(average_phase_error) >= 50.0 * mode) {
+          downgrade_mode();
 #ifdef DEBUG
-          tx_pstr(PSTR("M_FAST\r\n\r\n"));
+          tx_pstr(PSTR("M_DN\r\n\r\n"));
 #endif
       }
     }
@@ -887,27 +909,11 @@ void main() {
     double iTerm_modulo = 1000. * time_constant;
     if (fabs(iTerm) > iTerm_modulo) {
 #ifdef DEBUG
-        char buf[10];
         tx_pstr(PSTR("RED\r\n"));
-        tx_pstr(PSTR("B_iT="));
-        dtostrf(iTerm, 7, 2, buf);
-        tx_str(buf);
-        tx_pstr(PSTR("\r\nB_TV="));
-        dtostrf(trim_value, 7, 2, buf);
-        tx_str(buf);
 #endif
 	int sign = (iTerm < 0)?-1:1;
         iTerm -= sign * iTerm_modulo;
         trim_value += sign * 1000;
-#ifdef DEBUG
-        tx_pstr(PSTR("\r\nA_iT="));
-        dtostrf(iTerm, 7, 2, buf);
-        tx_str(buf);
-        tx_pstr(PSTR("\r\nA_TV="));
-        dtostrf(trim_value, 7, 2, buf);
-        tx_str(buf);
-        tx_pstr(PSTR("\r\n\r\n"));
-#endif
     }
 
 #ifdef DEBUG
