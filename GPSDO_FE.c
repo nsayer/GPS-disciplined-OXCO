@@ -625,7 +625,7 @@ void main() {
   sei();
 
 #ifdef DEBUG
-  tx_pstr(PSTR("\r\n\r\nSTART\r\n"));
+  //tx_pstr(PSTR("\r\n\r\nSTART\r\n"));
   // one and only one of these should always be printed
   if (mcusr_value & _BV(PORF)) tx_pstr(PSTR("RES_PO\r\n")); // power-on reset
   if (mcusr_value & _BV(EXTRF)) tx_pstr(PSTR("RES_EXT\r\n")); // external reset
