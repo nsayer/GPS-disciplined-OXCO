@@ -1,6 +1,6 @@
 /*
 
-    GPS Disciplined FE5680A control sketch
+    GPS Disciplined FE405B control sketch
     Copyright (C) 2015 Nicholas W. Sayer
 
     This program is free software; you can redistribute it and/or modify
@@ -19,13 +19,12 @@
     
   */
 
-// This file is for the FE5680A hardware. This version of the hardware
+// This file is for the FE405B hardware. This version of the hardware
 // has an ATTiny841 controller, a 5 volt digital system, the hardware
-// phase detection system, and power and interface systems for an FE-5680A
-// rubidium oscillator. Your FE-5680A must be the kind that generates 10
-// MHz only and is tunable via serial commands.
+// phase detection system, and power and interface systems for an FE-405B
+// oscillator.
 
-// Fuse settings: lfuse=0xe0, hfuse = 0xd4, efuse = 0x1
+// Fuse settings: lfuse=0xe2, hfuse = 0xd4, efuse = 0x1
 // ext osc, long startup time, 4.3v brownout, preserve EEPROM, no self-programming
 
 #include <stdlib.h>  
@@ -41,7 +40,7 @@
 #include <util/atomic.h>
 
 // 10 MHz.
-#define F_CPU (10000000UL)
+#define F_CPU (15000000UL)
 #include <util/delay.h>
 
 // Serial port baud rate. Used below by serial initialization/reinitialization
@@ -67,14 +66,13 @@
 //#define IRQ_DRIVEN_TX
 #endif
 
-// The FE-5680A's specifications are a tuning range of +/- 383 Hz
+// The FE-405B's specifications are a tuning range of +/- 383 Hz
 // over the range of a 32 bit signed integer, or +/- 38.3 ppm. That's
 // an individual step size of 17.834E-15.
 //
 // However, specification and reality aren't always the same. The
 // unit I have for testing shows that at least near zero its resolution
-// is more like 256 steps per 2E-10 or so - which is something like
-// 50 times less resolution.
+// is more like 10.5E-15.
 //
 // The ADC measures a phase range of 1 us, which we arbitrarily
 // devide at a midpoint for a range of +/- 512 ns (it's not exactly
@@ -84,16 +82,17 @@
 // phase change-rate. That is, to alter the frequency by 1 ppb.
 //
 // In this case, however, the gain is too high. A resolution of
-// 17E-15 (or even 860E-15) is beyond the hardware we have to
+// 17E-15 (or even 10.5E-15) is beyond the hardware we have to
 // measure it. Throwing away some of the low resolution bits makes
 // the math less problematic (a float can only have so many bits
 // of precision).
 // Theoretical values:
 //#define BIT_REDUCE (8)
 //#define GAIN (56070 >> BIT_REDUCE)
-// Measured values:
-#define BIT_REDUCE (2)
-#define GAIN (1466 >> BIT_REDUCE)
+// Observed values
+#define BIT_REDUCE (7)
+#define GAIN (95238 >> BIT_REDUCE)
+
 //
 // In the initial FLL mode, the calculus is slightly different.
 // We expect F_CPU counts between each PPS interrupt. Every count off
@@ -106,8 +105,8 @@
 // faster one when we're outside of a certain range, and a slower
 // one when we're dialed in.
 #define TC_FAST 100
-#define TC_MED 1800 // 0.5 hour
-#define TC_SLOW 7200 // 2 hours
+#define TC_MED 900 // 0.25 hour
+#define TC_SLOW 1800 // 1/2 hour
 
 //
 // The damping factor is how much we reduce the influence of the integral
@@ -128,14 +127,6 @@
 // We don't actually need to read this pin. It triggers a TIMER1_CAPT interrupt.
 //#define PPS_PORT PINA
 //#define PPS_PIN _BV(PINA7)
-
-// We watch a single bit from the oscillator that indicates whether or not
-// it has a physics lock. Doing anything while this bit is high is futile.
-#define RDY_PORT PINA
-#define OSC_RDY _BV(PINA3)
-#define RDY_PU_PORT PUEA
-// Oddly enough, the definitions for PUEAx and PUEBx are missing.
-#define OSC_RDY_PU _BV(3)
 
 // This is an arbitrary midpoint value. We will attempt to coerce the phase error
 // to land at this value.
@@ -171,7 +162,6 @@ volatile unsigned char rx_buf[RX_BUF_LEN];
 volatile unsigned char rx_str_len;
 volatile unsigned int irq_adc_value;
 volatile unsigned long irq_time_span;
-unsigned char last_osc_locked;
 unsigned char last_gps_locked;
 #ifdef DEBUG
 volatile unsigned char pdop_buf[5];
@@ -509,8 +499,6 @@ void main() {
 
   // set up the serial port baud rates - 9600 for both
   // uses constants defined above in util/setbaud.h
-#undef F_CPU
-#define F_CPU (8000000UL)
 #include <util/setbaud.h>
   UBRR0H = UBRRH_VALUE;
   UBRR0L = UBRRL_VALUE;
@@ -523,8 +511,6 @@ void main() {
   UCSR0A = 0;
   UCSR1A = 0;
 #endif
-#undef F_CPU
-#define F_CPU (10000000UL)
 
 // If you need to initialize the GPS, then set TXEN, transmit
 // whatever is necessary, then clear TXEN. That will make the
@@ -553,14 +539,12 @@ void main() {
 
   // DDA7 is 0 to make PA7 an input for ICP.
   // DDA6 is unused (other than for programming).
-  // DDA3 is 0 to make PA3 an input for OSC_RDRY.
+  // DDA3 is unused (it's pin 3 on the DB9, which is NC).
   // The two serial ports will override the DD register.
   // DDA0 will be overridden by the ADC (below).
   // So at the end of all of that...
   DDRA = 0;
   //DDRA |= 0; // pointless
-  // Turn on the pull-up on !OSC_RDY
-  RDY_PU_PORT |= OSC_RDY_PU;
 
   // Set up timer1
   TCCR1A = 0; // Normal mode
@@ -582,7 +566,6 @@ void main() {
   reset_pll();
   gps_locked = 0;
   rx_str_len = 0;
-  last_osc_locked = 0xff; // none of the above
   last_gps_locked = 0xff; // none of the above
 #ifdef DEBUG
   // initialize to ""
@@ -625,8 +608,7 @@ void main() {
   sei();
 
 #ifdef DEBUG
-  // XXX Damnit, this doesn't fit.
-  //tx_pstr(PSTR("\r\n\r\nSTART\r\n"));
+  tx_pstr(PSTR("\r\n\r\nSTART\r\n"));
   // one and only one of these should always be printed
   if (mcusr_value & _BV(PORF)) tx_pstr(PSTR("RES_PO\r\n")); // power-on reset
   if (mcusr_value & _BV(EXTRF)) tx_pstr(PSTR("RES_EXT\r\n")); // external reset
@@ -679,8 +661,6 @@ skip:
     // Pet the dog
     wdt_reset();
 
-    unsigned char osc_locked = (RDY_PORT & OSC_RDY) == 0;
-
     // with debug firmware, the 0 bit is the GPS status and the 1 bit is
     // whether we've logged that status since the last change or not.
     if (gps_locked != last_gps_locked) {
@@ -701,65 +681,8 @@ skip:
         }
       }
     }
-    if (osc_locked != last_osc_locked) {
-      last_osc_locked = osc_locked;
-      if (osc_locked) {
-#ifdef DEBUG
-        tx_pstr(PSTR("FE_LK\r\n"));
-#endif
-      } else {
-#ifdef DEBUG
-        tx_pstr(PSTR("FE_UN\r\n"));
-#endif
-        writeDacValue(0);
-        reset_pll();
-      }
-    }
 
-    if (osc_locked && (CLKCR & 0x1f)) {
-      // The oscillator is now locked, and we're still running from the 8 MHz
-      // internal oscillator. Switch over to clocking from the external
-      // oscillator.
-#ifdef DEBUG
-      tx_pstr(PSTR("\r\nCK_SW\r\n"));
-#endif
-#ifdef IRQ_DRIVEN_TX
-      unsigned char tx_buf_empty = 0;
-      do {
-        ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-          tx_buf_empty = (txbuf_head == txbuf_tail);
-        }
-        wdt_reset();
-      } while(!tx_buf_empty);
-#endif
-      _delay_ms(20); // clear out the transmit buffer
-      wdt_reset();
-
-      CCP = 0xd8;
-      CLKCR = _BV(CSTR) | _BV(CKOUTC);
-
-      // And now that we've changed the system clock, we need to fix the USART
-      // baud rate dividers.
-#undef F_CPU
-#define F_CPU (10000000UL)
-#include <util/setbaud.h>
-      UBRR0H = UBRRH_VALUE;
-      UBRR0L = UBRRL_VALUE;
-      UBRR1H = UBRRH_VALUE;
-      UBRR1L = UBRRL_VALUE;
-#if USE_2X
-      UCSR0A = _BV(U2X0);
-      UCSR1A = _BV(U2X1);
-#else
-      UCSR0A = 0;
-      UCSR1A = 0;
-#endif
-#ifdef DEBUG
-      tx_pstr(PSTR("CK_OK\r\n\r\n"));
-#endif
-    }
-
-    unsigned char unlocked = (!gps_locked) || (!osc_locked);
+    unsigned char unlocked = (!gps_locked);
     // next, take care of the LEDs.
     // If we're unlocked, then blink them back and forth at 2 Hz.
     // Otherwise, put the binary value of "mode" on the two LEDs.
@@ -864,7 +787,7 @@ skip:
     average_phase_error -= average_phase_error / filter_time;
     average_phase_error += ((double)current_phase_error) / filter_time;
 
-    // 1 unit here is 1e9/F_CPU ppb, or 100 ppb.
+    // 1 unit here is 1e9/F_CPU ppb, or 66.6666 ppb.
     // A missed PPS means that we have to scale the intracycle delta,
     // because it presumably happened over more than one second.
     average_pps_error -= average_pps_error / filter_time;
