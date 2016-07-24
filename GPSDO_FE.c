@@ -625,12 +625,23 @@ void main() {
   sei();
 
 #ifdef DEBUG
-  //tx_pstr(PSTR("\r\n\r\nSTART\r\n"));
+#if 0
+  tx_pstr(PSTR("\r\n\r\nSTART\r\n"));
+#endif
+#if 1
+  {
+    tx_pstr(PSTR("\r\n\r\nRES:"));
+    char buf[8];
+    ltoa(mcusr_value, buf, 10);
+    tx_str(buf);
+  }
+#else
   // one and only one of these should always be printed
   if (mcusr_value & _BV(PORF)) tx_pstr(PSTR("RES_PO\r\n")); // power-on reset
   if (mcusr_value & _BV(EXTRF)) tx_pstr(PSTR("RES_EXT\r\n")); // external reset
   if (mcusr_value & _BV(BORF)) tx_pstr(PSTR("RES_BO\r\n")); // brown-out reset
   if (mcusr_value & _BV(WDRF)) tx_pstr(PSTR("RES_WD\r\n")); // watchdog reset
+#endif
 #endif
 
   last_dac_value = 0x7fffffffL; // unlikely
@@ -753,8 +764,10 @@ skip:
       UCSR0A = 0;
       UCSR1A = 0;
 #endif
+#if 0
 #ifdef DEBUG
       tx_pstr(PSTR("CK_OK\r\n\r\n"));
+#endif
 #endif
     }
 
@@ -977,6 +990,7 @@ skip:
           enter_timer--;
       } else if (fabs(average_phase_error) >= 50.0 * mode) {
           downgrade_mode();
+          time_constant = mode_to_tc(mode);
 #ifdef DEBUG
           tx_pstr(PSTR("M_DN\r\n\r\n"));
 #endif
