@@ -409,6 +409,15 @@ static void tx_fp(const long val, const unsigned int digits) {
 
 static void reset_pll();
 
+static char* skip_commas(char *ptr, int num) {
+  for(int i = 0; i < num; i++) {
+    ptr = strchr((const char *)ptr, ',');
+    if (ptr == NULL) return NULL; // not enough commas
+    ptr++; // skip over it
+  }
+  return ptr;
+}
+
 // When this method is called, we've just received
 // a complete NEMA GPS sentence. All we're really
 // interested in is whether or not GPS has a 3D fix.
@@ -438,38 +447,24 @@ static inline void handleGPS() {
   if (!strncmp_P((const char*)rx_buf, PSTR("$GPRMC"), 6)) {
     // $GPRMC,172313.000,A,xxxx.xxxx,N,xxxxx.xxxx,W,0.01,180.80,260516,,,D*74\x0d\x0a
 #ifdef DEBUG
-    ptr = strchr((const char *)ptr, ',');
+    ptr = skip_commas(ptr, 1);
     if (ptr == NULL) return; // not enough commas
-    ptr++; // skip over it
     strncpy((char *)time_buf, ptr, 6);
     time_buf[sizeof(time_buf) - 1] = 0;
-    for(i = 0; i < 8; i++) {
-      ptr = strchr((const char *)ptr, ',');
-      if (ptr == NULL) return; // not enough commas
-      ptr++; // skip over it
-    }
+    ptr = skip_commas(ptr, 8);
+    if (ptr == NULL) return; // not enough commas
     strncpy((char *)date_buf, ptr, 6);
     date_buf[sizeof(date_buf) - 1] = 0;
 #endif
   } else if (!strncmp_P((const char*)rx_buf, PSTR("$GPGSA"), 6)) {
     // $GPGSA,A,3,02,06,12,24,25,29,,,,,,,1.61,1.33,0.90*01
-    for(i = 0; i < 2; i++) {
-      ptr = strchr((const char *)ptr, ',');
-      if (ptr == NULL) {
-        return; // not enough commas
-      }
-      ptr++; // skip over it
-    }
+    ptr = skip_commas(ptr, 2);
+    if (ptr == NULL) return; // not enough commas
     gps_locked = (*ptr == '3');
 #ifdef DEBUG
     // continue parsing to find the PDOP value
-    for(i = 2; i < 15; i++) {
-      ptr = strchr((const char *)ptr, ',');
-      if (ptr == NULL) {
-        return; // not enough commas
-      }
-      ptr++; // skip over it
-    }
+    ptr = skip_commas(ptr, 15);
+    if (ptr == NULL) return; // not enough commas
     unsigned char len = (strchr((const char *)ptr, ',')) - ptr;
     if (len > sizeof(pdop_buf) - 1) len = sizeof(pdop_buf) - 1; // truncate if too long
     memcpy((void*)pdop_buf, ptr, len);
