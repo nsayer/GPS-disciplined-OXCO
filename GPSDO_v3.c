@@ -61,7 +61,7 @@
 //#define WAAS
 
 // Define this for the OH300 variant, undef for DOT050V
-//#define OH300
+#define OH300
 
 #if defined(DEBUG) || defined(WAAS)
 // define this to include the serial transmit infrastructure at all
@@ -220,16 +220,10 @@ static void writeDacValue(unsigned int value) {
   DAC_PORT |= DAC_CLK;
   // Now we start - Assert !CS
   DAC_PORT &= ~DAC_CS;
-  // we're going to write a bunch of zeros. The first six are just
-  // padding, and the last two are power-off bits that we want to be
-  // always zero.
-  DAC_PORT &= ~DAC_DO;
-  for(int i = 0; i < 8; i++) {
-    // each negative-going pulse of the clock pin shifts in the DO bit.
-    DAC_PORT &= ~DAC_CLK;
-    DAC_PORT |= DAC_CLK;
-  }
-  for(int i = 15; i >= 0; i--) {
+  // The tricky part here is that if you shift a 16 bit value more than
+  // 16 times to the right, you're going to get a 0. This just happens
+  // to be what we want anyhow.
+  for(int i = 23; i >= 0; i--) {
     if ((value >> i) & 0x1)
       DAC_PORT |= DAC_DO;
     else
