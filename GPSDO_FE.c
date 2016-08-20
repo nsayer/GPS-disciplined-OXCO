@@ -1032,7 +1032,7 @@ skip:
 #endif
         int sign = (iTerm < 0)?-1:1;
         iTerm -= sign * iTerm_modulo;
-        trim_value += sign * 1000;
+        trim_value -= sign * 1000;
     }
 
 #ifdef DEBUG
