@@ -361,44 +361,6 @@ static inline void tx_str(const char *buf) {
     tx_char(buf[i]);
 }
 
-// send a NMEA GPS sentence. Takes the sentence
-// data between the $ and *, exclusive.
-static inline void tx_gps(const char *in) {
-  tx_char('$');
-  tx_pstr(in);
-  tx_char('*');
-  unsigned char sum = 0;
-  for(int i = 0; i < strlen_P(in); i++) sum += pgm_read_byte(&(in[i]));
-  tx_char(charHex(sum >> 8));
-  tx_char(charHex(sum & 0xf));
-  tx_pstr(PSTR("\r\n"));
-}
-
-/*
-// lame. But the only available alternative is floating point.
-static unsigned long inline pow10(const unsigned int val) {
-  unsigned long out = 1;
-  for(int i = 0; i < val; i++) out *= 10;
-  return out;
-}
-
-// Print out a fixed-point value with the given number of decimals
-static void tx_fp(const long val, const unsigned int digits) {
-  char buf[16];
-  tx_char(val<0?'-':'+');
-  unsigned long abs_val = labs(val);
-  ltoa(abs_val / pow10(digits), buf, 10);
-  tx_str(buf);
-  if (digits == 0) return;
-  tx_char('.');
-  unsigned long frac_part = abs_val % pow10(digits);
-  for(int i = 1; i < digits; i++)
-    if (frac_part < pow10(i)) tx_char('0');
-  ltoa(frac_part, buf, 10);
-  tx_str(buf);
-}
-*/
-
 #endif
 
 static void reset_pll();
