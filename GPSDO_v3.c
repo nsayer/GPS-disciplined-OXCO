@@ -21,7 +21,7 @@
 
 // This file is for hardware version 3, which is actually board v2.0 and
 // beyond. This version of the hardware has an ATTiny841 controller, a
-// 5 volt digital system, a 10 MHz OH300 and the hardware phase detection
+// 5 volt digital system, a 10 MHz oscillator and the hardware phase detection
 // system.
 
 // Fuse settings: lfuse=0xe0, hfuse = 0xd4, efuse = 0x1
@@ -61,7 +61,7 @@
 //#define WAAS
 
 // Define this for the OH300 variant, undef for DOT050V
-#define OH300
+//#define OH300
 
 #if defined(DEBUG) || defined(WAAS)
 // define this to include the serial transmit infrastructure at all
@@ -170,7 +170,7 @@
 #define MODE_SLOW 2
 #endif
 
-unsigned int last_dac_value;
+unsigned long last_dac_value;
 double iTerm;
 double trim_value;
 double average_phase_error;
@@ -457,7 +457,7 @@ static inline void handleGPS() {
     gps_locked = (*ptr == '3');
 #ifdef DEBUG
     // continue parsing to find the PDOP value
-    ptr = skip_commas(ptr, 15);
+    ptr = skip_commas(ptr, 13);
     if (ptr == NULL) return; // not enough commas
     unsigned char len = (strchr((const char *)ptr, ',')) - ptr;
     if (len > sizeof(pdop_buf) - 1) len = sizeof(pdop_buf) - 1; // truncate if too long
@@ -565,7 +565,7 @@ void main() {
   ADMUXB = _BV(REFS1) | _BV(REFS0); // 4.096V is ref, no external connection, no gain
   DIDR0 = _BV(ADC0D); // disable digital I/O on pin A0.
 
-  last_dac_value = 0x8000; // the DAC defaults to powering up at mid-point.
+  last_dac_value = 0xffffffff; // none-of-the-above value
   pps_count = 0;
   mode = MODE_START;
   reset_pll();
