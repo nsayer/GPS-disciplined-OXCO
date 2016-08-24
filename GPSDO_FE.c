@@ -445,7 +445,7 @@ static inline void handleGPS() {
     gps_locked = (*ptr == '3');
 #ifdef DEBUG
     // continue parsing to find the PDOP value
-    ptr = skip_commas(ptr, 15);
+    ptr = skip_commas(ptr, 13);
     if (ptr == NULL) return; // not enough commas
     unsigned char len = (strchr((const char *)ptr, ',')) - ptr;
     if (len > sizeof(pdop_buf) - 1) len = sizeof(pdop_buf) - 1; // truncate if too long
