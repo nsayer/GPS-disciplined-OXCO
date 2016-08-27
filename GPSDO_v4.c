@@ -653,6 +653,7 @@ void main() {
       char temp[5];
       ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
         strcpy(temp, (const char*) pps_err_buf); // it's volatile, so make a copy atomically.
+        pps_err_buf[0] = 0; // clear it out.
       }
 #ifdef DEBUG
       tx_pstr(PSTR("QE="));
@@ -660,7 +661,6 @@ void main() {
       tx_pstr(PSTR("\r\n"));
 #endif
       pps_err = atof(temp);
-      pps_err_buf[0] = 0; // clear it out.
     }
 
     long pps_cycle_delta = irq_time_span - F_CPU;
