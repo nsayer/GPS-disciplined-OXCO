@@ -110,8 +110,8 @@
 // ones when we're dialed in.
 #ifdef OH300
 #define TC_FAST 100
-#define TC_MED 400
-#define TC_SLOW 800
+#define TC_MED 200
+#define TC_SLOW 400
 #else
 #define TC_FAST 50
 #define TC_SLOW 100
