@@ -61,7 +61,7 @@
 //#define WAAS
 
 // Define this for the OH300 variant, undef for DOT050V
-//#define OH300
+#define OH300
 
 #if defined(DEBUG) || defined(WAAS)
 // define this to include the serial transmit infrastructure at all
@@ -113,8 +113,8 @@
 // ones when we're dialed in.
 #ifdef OH300
 #define TC_FAST 100
-#define TC_MED 400
-#define TC_SLOW 800
+#define TC_MED 200
+#define TC_SLOW 400
 #else
 #define TC_FAST 50
 #define TC_SLOW 100
