@@ -292,7 +292,11 @@ ISR(TIMER1_CAPT_vect) {
 
 static inline void handleGPS();
 
+#ifdef __AVR_ATmega328PB__
+ISR(USART0_RX_vect) {
+#else
 ISR(USART_RX_vect) {
+#endif
   unsigned char rx_char = UDR0;
   
   if (rx_str_len == 0 && rx_char != '$') return; // wait for a "$" to start the line.
@@ -324,7 +328,11 @@ static inline unsigned char hexChar(unsigned char c) {
 }
 
 #ifdef SERIAL_TX
+#ifdef __AVR_ATmega328PB__
+ISR(USART0_UDRE_vect) {
+#else
 ISR(USART_UDRE_vect) {
+#endif
   if (txbuf_head == txbuf_tail) {
     // the transmit queue is empty.
     UCSR0B &= ~_BV(UDRIE0); // disable the TX interrupt
@@ -486,7 +494,12 @@ void main() {
   wdt_enable(WDTO_500MS);
 
   // We use Timer1, USART0 and the ADC.
+#ifdef __AVR_ATmega328PB__
+  PRR0 |= _BV(PRSPI0) | _BV(PRTIM0) | _BV(PRTIM2) | _BV(PRTWI0) | _BV(PRUSART1);
+  PRR1 |= _BV(PRTIM3) | _BV(PRSPI1) | _BV(PRTIM4) | _BV(PRPTC) | _BV(PRTWI1);
+#else
   PRR |= _BV(PRTWI) | _BV(PRSPI) | _BV(PRTIM2) | _BV(PRTIM0);
+#endif
 
   // set up the serial port
   // uses constants defined above in util/setbaud.h
