@@ -10,8 +10,11 @@ PROGRAMMER = usbtiny
 #CHIP = attiny841
 #OUT=GPSDO_v3
 # FE
-CHIP = attiny841
-OUT=GPSDO_FE
+#CHIP = attiny841
+#OUT=GPSDO_FE
+# v4
+CHIP = atmega328pb
+OUT=GPSDO_v4
 
 CC = avr-gcc
 OBJCPY = avr-objcopy

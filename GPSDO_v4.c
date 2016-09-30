@@ -60,6 +60,11 @@
 // Define this for the OH300 variant, undef for DOT050V
 #define OH300
 
+#ifdef OH300
+// The OH300 variant uses the 18 bit AD5680 DAC instead of the AD5061.
+#define AD5680
+#endif
+
 #if defined(DEBUG)
 // define this to include the serial transmit infrastructure at all
 #define SERIAL_TX
@@ -74,10 +79,10 @@
 // granularity target should be at least a half an order of magnitude higher
 // than your desired frequency stability.
 //
-// The tuning step for the OH300 variant is approximately 12 ppt.
+// The tuning step for the OH300 variant is approximately 3 ppt.
 // The DAC output range is 2.7 volts (82% of 3.3v) and the tuning
-// range across that is 0.8ppm. The DAC is 16 bits,
-// so .8ppm / 65536 is ~12 ppt. The target here is 0.1 ppb.
+// range across that is 0.8ppm. The DAC is 18 bits,
+// so .8ppm / 262144 is ~3 ppt. The target here is 0.1 ppb.
 //
 // The tuning step for the DOT050V variant is approximately 200 ppt.
 // The DAC output range is 1.65 volts (50% of 3.3v) and the tuning range
@@ -91,7 +96,7 @@
 // The gain is how much we have to nudge the DAC to make 1 ns/sec
 // phase change-rate. That is, to alter the frequency by 1 ppb.
 #ifdef OH300
-#define GAIN 67
+#define GAIN 267
 #else
 #define GAIN 5
 #endif
@@ -117,7 +122,13 @@
 #define TC_SLOW 100
 #endif
 
-//
+#ifdef AD5680
+#define DAC_RANGE (0x3ffffl)
+#else
+#define DAC_RANGE (0xffff)
+#endif
+#define DAC_MIDPOINT (DAC_RANGE >> 1)
+
 // The damping factor is how much we reduce the influence of the integral
 // term - that is, the accumulated error since the last loop startup
 // (that is, the last time the FLL determined the starting DAC value).
@@ -206,26 +217,36 @@ volatile unsigned int txbuf_head, txbuf_tail;
 #define fabs MY_fabs
 static inline double fabs(double x) { return x<0?-x:x; }
 
-// Write the given 16 bit value to our AD5061 DAC.
-// The data format is 6 bits of 0, then two bits of
-// shutdown control, which we will set to 0 (because
-// we never want to shut down), then 16 bits of
-// value, MSB first. Data is clocked on the falling
+// For the 5680, the data format is 4 bits of 0, 18 bits of big-endian data, and two bits of 0.
+// For the 5061, the data format is 8 bits of 0 (the bottom two are shut-down bits that we always
+// set to 0), then 16 bits of big-endian data.
+
+// Data is clocked on the falling
 // edge of the clock pin, and CS must be held low the
 // whole time. The output voltage will slew on the rising
 // edge of CS. The minimum time between clock transition
 // is way faster than our clock speed, so we don't need
 // to perform any delays.
-static void writeDacValue(unsigned int value) {
+
+static void writeDacValue(unsigned long value) {
+  // Limit the value to the actual range of the DAC
+  value &= DAC_RANGE;
+
   if (value == last_dac_value) return; // don't do useless writes - results in a glitch for no reason
   last_dac_value = value;
+
+#ifdef AD5680
+  // The bottom two bits on the 5680A are "don't care". The actual data
+  // starts at bit 3.
+  value <<= 2;
+#endif
 
   // Start with the clock pin high.
   DAC_PORT |= DAC_CLK;
   // Now we start - Assert !CS
   DAC_PORT &= ~DAC_CS;
-  // The tricky part here is that if you shift a 16 bit value more than
-  // 16 times to the right, you're going to get a 0. This just happens
+  // The tricky part here is that if you shift a 16 (or 18) bit value more than
+  // 16 (or 18) times to the right, you're going to get a 0. This just happens
   // to be what we want anyhow.
   for(int i = 23; i >= 0; i--) {
     if ((value >> i) & 0x1)
@@ -760,7 +781,7 @@ void main() {
       // into a PPB error
       double adj_val = (1000000000.0 / F_CPU) * average_pps_error * START_GAIN;
       trim_value -= adj_val;
-      unsigned int dac_value = (int)(DAC_SIGN * trim_value) + 0x8000;
+      unsigned long dac_value = (long)(DAC_SIGN * trim_value) + DAC_MIDPOINT;
 
       writeDacValue(dac_value);
 #ifdef DEBUG
@@ -882,7 +903,7 @@ void main() {
     // and the adj_val we've computed will be relative to that.
 
     // And now, throw away the fractional part for writing to the DAC.
-    unsigned int dac_value = (int)(DAC_SIGN * (trim_value - adj_val) + 0.5) + 0x8000;
+    unsigned long dac_value = (long)(DAC_SIGN * (trim_value - adj_val) + 0.5) + DAC_MIDPOINT;
 
     writeDacValue(dac_value);
 
@@ -918,7 +939,7 @@ void main() {
       tx_str(buf);
       // DAC = DAC Value - the actual value written to the DAC
       tx_pstr(PSTR("\r\nDAC=0x"));
-      itoa(dac_value, buf, 16);
+      ltoa(dac_value, buf, 16);
       tx_str(buf);
       // PDOP = Positional Dilution of Precision - the PDOP value reported by the GPS receiver
       tx_pstr(PSTR("\r\nPD="));
