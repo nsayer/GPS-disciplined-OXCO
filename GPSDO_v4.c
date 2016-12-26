@@ -240,16 +240,14 @@ static void writeDacValue(unsigned long value) {
   // starts at bit 3.
   value <<= 2;
 #endif
+  // This is the point where we'd OR in any control bits, but there are none we want.
 
   // Start with the clock pin high.
   DAC_PORT |= DAC_CLK;
   // Now we start - Assert !CS
   DAC_PORT &= ~DAC_CS;
-  // The tricky part here is that if you shift a 16 (or 18) bit value more than
-  // 16 (or 18) times to the right, you're going to get a 0. This just happens
-  // to be what we want anyhow.
-  for(int i = 23; i >= 0; i--) {
-    if ((value >> i) & 0x1)
+  for(unsigned long mask = 1L << 23; mask != 0; mask >>= 1) {
+    if (value & mask)
       DAC_PORT |= DAC_DO;
     else
       DAC_PORT &= ~DAC_DO;

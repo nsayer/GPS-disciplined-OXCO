@@ -220,11 +220,8 @@ static void writeDacValue(unsigned int value) {
   DAC_PORT |= DAC_CLK;
   // Now we start - Assert !CS
   DAC_PORT &= ~DAC_CS;
-  // The tricky part here is that if you shift a 16 bit value more than
-  // 16 times to the right, you're going to get a 0. This just happens
-  // to be what we want anyhow.
-  for(int i = 23; i >= 0; i--) {
-    if ((value >> i) & 0x1)
+  for(unsigned long mask = 1L << 23; mask != 0; mask >>= 1) {
+    if (value & mask)
       DAC_PORT |= DAC_DO;
     else
       DAC_PORT &= ~DAC_DO;
