@@ -216,22 +216,18 @@ unsigned char last_switches;
 // edge of CS. The minimum time between clock transition
 // is way faster than our clock speed, so we don't need
 // to perform any delays.
-static void writeDacValue(unsigned int value) {
+static void writeDacValue(const unsigned int v) {
+
+  unsigned long value = v;
+  // This is the point where we could add in control bits. It turns out
+  // we just don't want any.
+
   // Start with the clock pin high.
   DAC_PORT |= DAC_CLK;
   // Now we start - Assert !CS
   DAC_PORT &= ~DAC_CS;
-  // we're going to write a bunch of zeros. The first six are just
-  // padding, and the last two are power-off bits that we want to be
-  // always zero.
-  DAC_PORT &= ~DAC_DO;
-  for(int i = 0; i < 8; i++) {
-    // each negative-going pulse of the clock pin shifts in the DO bit.
-    DAC_PORT &= ~DAC_CLK;
-    DAC_PORT |= DAC_CLK;
-  }
-  for(int i = 15; i >= 0; i--) {
-    if ((value >> i) & 0x1)
+  for(unsigned long mask = 1L << 23; mask != 0; mask >>= 1) {
+    if (value & mask)
       DAC_PORT |= DAC_DO;
     else
       DAC_PORT &= ~DAC_DO;
