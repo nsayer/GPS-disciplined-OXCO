@@ -211,11 +211,11 @@ volatile char txbuf[TX_BUF_LEN];
 volatile unsigned int txbuf_head, txbuf_tail;
 #endif
 
-// I don't know why my version of AVR libc doesn't have
-// fabs() like it's supposed to. Fortunately, it's pretty easy to
-// write. It's in the includes, but not the library.
-#define fabs MY_fabs
-static inline double fabs(double x) { return x<0?-x:x; }
+// -ffreestanding allows us to declare main() as void, but
+// also disappears all of the built-in library methods.
+// However, we CAN get them back by re-defining them in terms
+// of their __builtin_ prefixed names.
+#define fabs(n) __builtin_fabs(n)
 
 // For the 5680, the data format is 4 bits of 0, 18 bits of big-endian data, and two bits of 0.
 // For the 5061, the data format is 8 bits of 0 (the bottom two are shut-down bits that we always
