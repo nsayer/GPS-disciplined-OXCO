@@ -12,9 +12,6 @@ PROGRAMMER = usbtiny
 # FE
 #CHIP = attiny841
 #OUT=GPSDO_FE
-# FE v2
-#CHIP = atmega328pb
-#OUT=GPSDO_FE
 # v4
 CHIP = atmega328pb
 OUT=GPSDO_v4
@@ -22,7 +19,7 @@ OUT=GPSDO_v4
 CC = avr-gcc
 OBJCPY = avr-objcopy
 AVRDUDE = avrdude
-OPTS = -Os -g -std=c11 -Wall -Wno-main
+OPTS = -Os -g -ffreestanding -std=c99 -Wall
 
 CFLAGS = -mmcu=$(CHIP) $(OPTS)
 
