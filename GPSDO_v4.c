@@ -211,12 +211,6 @@ volatile char txbuf[TX_BUF_LEN];
 volatile unsigned int txbuf_head, txbuf_tail;
 #endif
 
-// -ffreestanding allows us to declare main() as void, but
-// also disappears all of the built-in library methods.
-// However, we CAN get them back by re-defining them in terms
-// of their __builtin_ prefixed names.
-#define fabs(n) __builtin_fabs(n)
-
 // For the 5680, the data format is 4 bits of 0, 18 bits of big-endian data, and two bits of 0.
 // For the 5061, the data format is 8 bits of 0 (the bottom two are shut-down bits that we always
 // set to 0), then 16 bits of big-endian data.
@@ -265,12 +259,10 @@ ISR(TIMER1_OVF_vect) {
   timer_hibits++;
 }
 
-// When a capture occurs, we calculate the actual number of timer counts
-// and the difference between that and the expected value. That
-// is added to the sample buffer (rotating it if required), and
-// the pps count is incremented (just so we can tell in the main loop
-// that the sample buffer has changed). None of this actually matters
-// if the GPS receiver is unlocked, though.
+// When a capture occurs, we figure out how many clock ticks occurred
+// since the last one, and we read the phase position (via the ADC).
+// We save those as (volatile) globals and then increment a pps counter
+// value just so the main loop will know that it happened.
 ISR(TIMER1_CAPT_vect) {
   static unsigned long last_timer_val;
 
@@ -407,10 +399,7 @@ static char* skip_commas(char *ptr, int num) {
 }
 
 // When this method is called, we've just received
-// a complete NEMA GPS sentence. All we're really
-// interested in is whether or not GPS has a 3D fix.
-// For that, we'll partially parse the GPGSA sentence.
-// Nothing else is of interest.
+// a complete NEMA GPS sentence.
 static inline void handleGPS() {
   unsigned int str_len = rx_str_len; // rx_str_len is where the \0 was written.
  
@@ -469,7 +458,9 @@ static inline void handleGPS() {
   }
 }
 
-static unsigned int mode_to_tc(const unsigned char mode) {
+// Optimization beyond O2 turns this into a jump table, which is a step backwards
+// on a Harvard machine.
+static unsigned int __attribute__((optimize("O1"))) mode_to_tc(const unsigned char mode) {
   switch(mode) {
     case MODE_START: // FLL mode, but we use fast averaging times
     case MODE_FAST:
@@ -506,7 +497,8 @@ static void downgrade_mode() {
   iTerm *= ratio;
 }
 
-void main() {
+// main() is void, and we never return from it.
+void __ATTR_NORETURN__ main() {
   // This must be done as early as possible to prevent the watchdog from biting during reset.
   unsigned char mcusr_value = MCUSR;
   MCUSR = 0;
