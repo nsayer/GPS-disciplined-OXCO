@@ -25,8 +25,9 @@
 // rubidium oscillator. Your FE-5680A must be the kind that generates 10
 // MHz only and is tunable via serial commands.
 
-// Fuse settings: lfuse=0xe0, hfuse = 0xd4, efuse = 0x1
 // ext osc, long startup time, 4.3v brownout, preserve EEPROM, no self-programming
+// ATTiny841 Fuse settings: lfuse=0xe2, hfuse = 0xd4, efuse = 0x1
+// ATMega328PB Fuse settings: lfuse=0xe0, hfuse = 0xd7, efuse = 0xfc
 
 #include <stdlib.h>  
 #include <stdio.h>  
@@ -119,23 +120,72 @@
 // If you have an inverse DAC slope, set this to -1.
 #define DAC_SIGN (1)
 
+#ifdef __AVR_ATmega328PB__
+// The ATMega328PB variant can do quantization error correction.
+// The quantization error factor is in ns, but our ADC phase discriminator
+// values aren't precise. the QE_COMPENSATION is the quantization error
+// scaling value that we apply to the raw QE value to add it to the
+// phase discriminator value.
+#define QE_COMPENSATION 1.5
+#else
+// The ATTiny841 variant can switch from the internal osc to the external once it's ready
+#define OSC_SEL 1
+#endif
+
+#ifdef __AVR_ATmega328PB__
+#define LED_PORT PORTD
+#define LED0 _BV(PORTD4)
+#define LED1 _BV(PORTD5)
+#define LED_DDR_PORT DDRD
+#define LED_DDR (_BV(DDRD4) | _BV(DDRD5))
+#define SW_DDR_PORT DDRD
+#define SW_DDR (_BV(DDRD6))
+#define SW_PORT PIND
+#define SW_BIT _BV(PIND6)
+#define SW_PU_PORT PORTD
+#define SW_PU _BV(PORTD6)
+
+// This is about 500 ms
+#define BUTTON_BLINK_LENGTH 83
+
+// We want this to be around 50 ms.
+#define DEBOUNCE_TICKS 8
+
+#else
 #define LED_PORT PORTB
 #define LED0 _BV(PORTB1)
 #define LED1 _BV(PORTB2)
 #define LED_DDR_PORT DDRB
 #define LED_DDR (_BV(DDRB1) | _BV(DDRB2))
+#endif
 
 // We don't actually need to read this pin. It triggers a TIMER1_CAPT interrupt.
+#ifdef __AVR_ATmega328PB__
+//#define PPS_PORT PINB
+//#define PPS_PIN _BV(PINB0)
+#else
 //#define PPS_PORT PINA
 //#define PPS_PIN _BV(PINA7)
+#endif
 
 // We watch a single bit from the oscillator that indicates whether or not
 // it has a physics lock. Doing anything while this bit is high is futile.
+#ifdef __AVR_ATmega328PB__
+#define RDY_PORT PIND
+#define OSC_RDY _BV(PIND2)
+#define RDY_DDR _BV(DDRD2)
+#define RDY_DDR_PORT DDRD
+#define RDY_PU_PORT PORTD
+#define OSC_RDY_PU _BV(PORTD2)
+#else
 #define RDY_PORT PINA
 #define OSC_RDY _BV(PINA3)
+#define RDY_DDR_PORT DDRA
+#define RDY_DDR _BV(DDRA3)
 #define RDY_PU_PORT PUEA
 // Oddly enough, the definitions for PUEAx and PUEBx are missing.
 #define OSC_RDY_PU _BV(3)
+#endif
 
 // This is an arbitrary midpoint value. We will attempt to coerce the phase error
 // to land at this value.
@@ -178,6 +228,9 @@ volatile unsigned char pdop_buf[5];
 volatile unsigned char time_buf[7];
 volatile unsigned char date_buf[7];
 #endif
+#ifdef QE_COMPENSATION
+volatile unsigned char pps_err_buf[5];
+#endif
 #ifdef SERIAL_TX
 // serial transmit buffer setup
 #ifdef IRQ_DRIVEN_TX
@@ -185,12 +238,11 @@ volatile char txbuf[TX_BUF_LEN];
 volatile unsigned int txbuf_head, txbuf_tail;
 #endif
 #endif
-
-// I don't know why my version of AVR libc doesn't have
-// fabs() like it's supposed to. Fortunately, it's pretty easy to
-// write. It's in the includes, but not the library.
-#define fabs MY_fabs
-static inline double fabs(double x) { return x<0?-x:x; }
+#ifdef __AVR_ATmega328PB__
+unsigned int debounce_time;
+unsigned char button_down;
+unsigned int button_blink_time;
+#endif
 
 // The oscillator UART isn't done with interrupts. The commands
 // are quite brief, so blocking is ok.
@@ -216,17 +268,17 @@ static unsigned int rx_osc_byte() {
 
 // It's not really a "DAC" per se. It's a serial command
 // to the oscillator to set its tuning value.
-static void writeDacValue(long value) {
+static void writeDacValue(long value, unsigned char non_volatile) {
   if (value == last_dac_value) return; // don't do useless writes - results in a glitch for no reason
   last_dac_value = value;
 
   // Add in the low resolution bits we threw away
   value <<= BIT_REDUCE;
 
-  tx_osc_byte(0x2e); // temporary-write command ID
+  tx_osc_byte(non_volatile?0x2c:0x2e); // command ID
   tx_osc_byte(0x09); // cmd length LSB
   tx_osc_byte(0x00); // cmd length MSB
-  tx_osc_byte(0x27); // cmd checksum
+  tx_osc_byte(non_volatile?0x25:0x27); // cmd checksum
   unsigned char cksum = 0;
   for(int i = 3; i >= 0; i--) {
     unsigned char octet = (unsigned char)(value >> (i * 8));
@@ -280,6 +332,10 @@ ISR(TIMER1_CAPT_vect) {
 
   irq_time_span = timer_val - last_timer_val;
   last_timer_val = timer_val;
+
+#ifdef QE_COMPENSATION
+  pps_err_buf[0] = 0; // The *next* sawtooth msg applies to *this* pps.
+#endif
 
   pps_count++;
 
@@ -453,9 +509,22 @@ static inline void handleGPS() {
     pdop_buf[len] = 0; // null terminate
 #endif
   }
+#ifdef QE_COMPENSATION
+  else if (!strncmp_P((const char*)rx_buf, PSTR("$PSTI,00"), 8)) {
+    // $PSTI,00,2,0,5.8,,*3F
+    ptr = skip_commas(ptr, 4);
+    if (ptr == NULL) return; // not enough commas
+    unsigned char len = (strchr((const char *)ptr, ',')) - ptr;
+    if (len > sizeof(pps_err_buf) - 1) len = sizeof(pps_err_buf) - 1; // truncate if too long
+    memcpy((void*)pps_err_buf, ptr, len);
+    pps_err_buf[len] = 0; // null terminate
+  }
+#endif
 }
 
-static unsigned int mode_to_tc(const unsigned char mode) {
+// Optimization beyond O2 turns this into a jump table, which is a step backwards
+// on a Harvard machine.
+static unsigned __attribute__((optimize("O1"))) int mode_to_tc(const unsigned char mode) {
   switch(mode) {
     case MODE_START: // FLL mode, but we use fast averaging times
     case MODE_FAST:
@@ -490,7 +559,35 @@ static void downgrade_mode() {
   iTerm *= ratio;
 }
 
-void main() {
+#ifdef __AVR_ATmega328PB__
+static unsigned char check_buttons() {
+        if (debounce_time != 0 && timer_hibits - debounce_time < DEBOUNCE_TICKS) {
+                // We don't pay any attention to the buttons during debounce time.
+                return 0;
+        } else {
+                debounce_time = 0; // debounce is over
+        }
+        unsigned char status = SW_PORT & SW_BIT;
+        status ^= SW_BIT; // invert the buttons - 0 means down.
+        if (!((button_down == 0) ^ (status == 0))) return 0; // either no button is down, or a button is still down
+
+        // Something *changed*, which means we must now start a debounce interval.
+        debounce_time = timer_hibits;
+        if (!debounce_time) debounce_time++; // it's not allowed to be zero
+
+        if (!button_down && status) {
+                button_down = 1; // a button has been pushed
+                return 1;
+        }
+        if (button_down && !status) {
+                button_down = 0; // a button has been released
+                return 0;
+        }
+        __builtin_unreachable(); // we'll never get here.
+}
+#endif
+
+void __ATTR_NORETURN__ main() {
   // This must be done as early as possible to prevent the watchdog from biting during reset.
   unsigned char mcusr_value = MCUSR;
   MCUSR = 0;
@@ -500,10 +597,30 @@ void main() {
   wdt_reset();
 
   // We use Timer1, USART0, USART1 and the ADC.
+#ifdef __AVR_ATmega328PB__
+  PRR0 |= _BV(PRSPI0) | _BV(PRTIM0) | _BV(PRTIM2) | _BV(PRTWI0);
+  PRR1 |= _BV(PRTIM3) | _BV(PRSPI1) | _BV(PRTIM4) | _BV(PRPTC) | _BV(PRTWI1);
+#else
   PRR |= _BV(PRTWI) | _BV(PRSPI) | _BV(PRTIM2) | _BV(PRTIM0);
+#endif
 
   // set up the serial port baud rates - 9600 for both
   // uses constants defined above in util/setbaud.h
+#ifdef __AVR_ATmega328PB__
+#define F_CPU (10000000UL)
+#include <util/setbaud.h>
+  UBRR0H = UBRRH_VALUE;
+  UBRR0L = UBRRL_VALUE;
+  UBRR1H = UBRRH_VALUE;
+  UBRR1L = UBRRL_VALUE;
+#if USE_2X
+  UCSR0A = _BV(U2X0);
+  UCSR1A = _BV(U2X1);
+#else
+  UCSR0A = 0;
+  UCSR1A = 0;
+#endif
+#else
 #undef F_CPU
 #define F_CPU (8000000UL)
 #include <util/setbaud.h>
@@ -520,6 +637,7 @@ void main() {
 #endif
 #undef F_CPU
 #define F_CPU (10000000UL)
+#endif
 
 // If you need to initialize the GPS, then set TXEN, transmit
 // whatever is necessary, then clear TXEN. That will make the
@@ -542,19 +660,14 @@ void main() {
   UCSR1C = _BV(UCSZ00) | _BV(UCSZ01);
 
   // set up the LED port. The two LEDs are outputs.
-  DDRB = 0;
-  DDRB |= LED_DDR;
-  PORTB &= ~(LED0 | LED1); // Turn off both LEDs
+  LED_DDR_PORT |= LED_DDR;
+  LED_PORT &= ~(LED0 | LED1); // Turn off both LEDs
+#ifdef __AVR_ATmega328PB__
+  SW_DDR_PORT &= ~(SW_DDR);
+  SW_PU_PORT |= SW_PU;
+#endif
 
-  // DDA7 is 0 to make PA7 an input for ICP.
-  // DDA6 is unused (other than for programming).
-  // DDA3 is 0 to make PA3 an input for OSC_RDRY.
-  // The two serial ports will override the DD register.
-  // DDA0 will be overridden by the ADC (below).
-  // So at the end of all of that...
-  DDRA = 0;
-  //DDRA |= 0; // pointless
-  // Turn on the pull-up on !OSC_RDY
+  RDY_DDR_PORT &= ~(RDY_DDR);
   RDY_PU_PORT |= OSC_RDY_PU;
 
   // Set up timer1
@@ -564,12 +677,18 @@ void main() {
   TCNT1 = 0; // clear the counter.
   timer_hibits = 0;
 
+#ifdef __AVR_ATmega328PB__
+  ACSR = _BV(ACD); // Turn off the analog comparators
+  ADCSRA = _BV(ADEN) | _BV(ADPS2) | _BV(ADPS1); // ADC on, clock scale = 64
+  ADMUX = _BV(REFS0) | _BV(REFS1); // 1.1V is ref, ADC0 is the input
+#else
   // Set up the ADC
   ACSR0A = _BV(ACD0); // Turn off the analog comparators
   ACSR1A = _BV(ACD1);
   ADCSRA = _BV(ADEN) | _BV(ADPS2) | _BV(ADPS1); // ADC on, clock scale = 64
   ADMUXA = 0; // ADC0 is A0
   ADMUXB = _BV(REFS1) | _BV(REFS0); // 4.096V is ref, no external connection, no gain
+#endif
   DIDR0 = _BV(ADC0D); // disable digital I/O on pin A0.
 
   pps_count = 0;
@@ -579,6 +698,11 @@ void main() {
   rx_str_len = 0;
   last_osc_locked = 0xff; // none of the above
   last_gps_locked = 0xff; // none of the above
+#ifdef __AVR_ATmega328PB__
+  debounce_time = 0;
+  button_down = 0;
+  button_blink_time = 0;
+#endif
 #ifdef DEBUG
   // initialize to ""
   *date_buf = 0;
@@ -586,6 +710,9 @@ void main() {
 #endif
 #ifdef SERIAL_TX
   *pdop_buf = 0; // null terminate
+#ifdef QE_COMPENSATION
+  *pps_err_buf = 0; // null terminate
+#endif
 #ifdef IRQ_DRIVEN_TX
   txbuf_head = txbuf_tail = 0; // clear the transmit buffer
 #endif
@@ -620,23 +747,26 @@ void main() {
   sei();
 
 #ifdef DEBUG
-#if 0
+#ifdef __AVR_ATmega328PB__
   tx_pstr(PSTR("\r\n\r\nSTART\r\n"));
 #endif
-#if 1
+/*
+//#ifndef __AVR_ATmega328PB__
   {
     tx_pstr(PSTR("\r\n\r\nRES:"));
     char buf[8];
     ltoa(mcusr_value, buf, 10);
     tx_str(buf);
+    tx_pstr(PSTR("\r\n"));
   }
-#else
+//#else
+*/
   // one and only one of these should always be printed
   if (mcusr_value & _BV(PORF)) tx_pstr(PSTR("RES_PO\r\n")); // power-on reset
   if (mcusr_value & _BV(EXTRF)) tx_pstr(PSTR("RES_EXT\r\n")); // external reset
   if (mcusr_value & _BV(BORF)) tx_pstr(PSTR("RES_BO\r\n")); // brown-out reset
   if (mcusr_value & _BV(WDRF)) tx_pstr(PSTR("RES_WD\r\n")); // watchdog reset
-#endif
+//#endif
 #endif
 
   last_dac_value = 0x7fffffffL; // unlikely
@@ -716,11 +846,12 @@ skip:
 #ifdef DEBUG
         tx_pstr(PSTR("FE_UN\r\n"));
 #endif
-        writeDacValue(0);
+        writeDacValue(0, 0);
         reset_pll();
       }
     }
 
+#ifdef OSC_SEL
     if (osc_locked && (CLKCR & 0x1f)) {
       // The oscillator is now locked, and we're still running from the 8 MHz
       // internal oscillator. Switch over to clocking from the external
@@ -759,17 +890,33 @@ skip:
       UCSR0A = 0;
       UCSR1A = 0;
 #endif
-#if 0
 #ifdef DEBUG
       tx_pstr(PSTR("CK_OK\r\n\r\n"));
 #endif
-#endif
     }
+#endif
 
     unsigned char unlocked = (!gps_locked) || (!osc_locked);
     // next, take care of the LEDs.
     // If we're unlocked, then blink them back and forth at 2 Hz.
     // Otherwise, put the binary value of "mode" on the two LEDs.
+#ifdef __AVR_ATmega328PB__
+    // BUT... if we're an ATMega328, then we have a button. If that button was pushed,
+    // then give a distinctive blink pattern. This one is two blinks in a half second.
+    if (button_blink_time != 0) {
+      unsigned int blink_pos = timer_hibits - button_blink_time;
+      if (blink_pos > BUTTON_BLINK_LENGTH) {
+        button_blink_time = 0;
+      } else {
+        blink_pos = (unsigned int)((blink_pos * 4L) / BUTTON_BLINK_LENGTH);
+        if (blink_pos & 1) {
+          LED_PORT |= LED0 | LED1;
+        } else {
+          LED_PORT &= ~(LED0 | LED1);
+        }
+      }
+    } else
+#endif
     if (!unlocked) {
       if (mode & 1)
         LED_PORT |= LED0;
@@ -791,8 +938,25 @@ skip:
       }
     }
 
+#ifdef __AVR_ATmega328PB__
+    if (check_buttons() && mode == MODE_SLOW && button_blink_time == 0) {
+      // Do a non-volatile write and blink the LEDs to celebrate
+#ifdef DEBUG
+      tx_pstr(PSTR("\r\nEE_WR\r\n\r\n"));
+#endif
+      long dac_value = (long)(DAC_SIGN * trim_value);
+      writeDacValue(dac_value, 1);
+      button_blink_time = timer_hibits;
+      if (!button_blink_time) button_blink_time++; // it cannot be set to 0.
+    }
+#endif
+
     // If we haven't had a PPS event since we were last here, we're done.
     if (last_pps_count == pps_count) continue;
+#ifdef QE_COMPENSATION
+    // if there hasn't been a quantization error sentence for this second, wait for it.
+    if (pps_err_buf[0] == 0) continue;
+#endif
     last_pps_count = pps_count;
 
 #ifdef DEBUG
@@ -817,8 +981,29 @@ skip:
       // FR - Free Running - GPS or osc is unlocked.
       tx_pstr(PSTR("FR\r\n\r\n"));
 #endif
+#ifdef QE_COMPENSATION
+      pps_err_buf[0] = 0; // clear it out.
+#endif
       continue;
     }
+
+#ifdef QE_COMPENSATION
+    double pps_err;
+    {
+      char temp[5];
+      ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+        strcpy(temp, (const char*) pps_err_buf); // it's volatile, so make a copy atomically.
+        pps_err_buf[0] = 0; // clear it out.
+      }
+#ifdef DEBUG
+      tx_pstr(PSTR("QE="));
+      tx_str(temp);
+      tx_pstr(PSTR("\r\n"));
+#endif
+      pps_err = atof(temp);
+    }
+#endif
+
     long pps_cycle_delta = irq_time_span - F_CPU;
 
     // round to the nearest second. It's impossible for this to
@@ -865,6 +1050,10 @@ skip:
     // is in nanoseconds and is wrapped.
     int current_phase_error = PHASE_ADC_MIDPOINT - irq_adc_value;
 
+#ifdef QE_COMPENSATION
+    current_phase_error += (int)((QE_COMPENSATION * pps_err) + 0.5); // quant error correction is in ns. Round to nearest
+#endif
+
     // This is an approximation of a rolling average, but it's good enough
     // for us, because it should not change very much in 1 second.
     unsigned int filter_time = time_constant / 10;
@@ -894,7 +1083,7 @@ skip:
       trim_value -= adj_val;
       long dac_value = (long)(DAC_SIGN * trim_value);
 
-      writeDacValue(dac_value);
+      writeDacValue(dac_value, 0);
 #ifdef DEBUG
       {
         char buf[8];
@@ -1021,7 +1210,7 @@ skip:
     // And now, throw away the fractional part for writing to the DAC.
     long dac_value = (long)(DAC_SIGN * (trim_value - adj_val) + 0.5);
 
-    writeDacValue(dac_value);
+    writeDacValue(dac_value, 0);
 
     // If the iTerm is accumulating too much correction, start off-loading
     // some of it to the trim_value.
@@ -1044,7 +1233,7 @@ skip:
       tx_pstr(PSTR("\r\niT="));
       dtostrf(iTerm, 7, 2, buf);
       tx_str(buf);
-#if 0
+#ifdef __AVR_ATmega328PB__
       // AV = Adjustment Value - the delta being applied right now to the TP
       tx_pstr(PSTR("\r\nAV="));
       dtostrf(adj_val, 7, 2, buf);
