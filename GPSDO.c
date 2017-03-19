@@ -434,7 +434,7 @@ static inline void handleGPS() {
       }
       ptr++; // skip over it
     }
-    char gps_now_valid = (*ptr == '3')?1:0; // The ?: is just in case some compiler decides true is some value other than 1.
+    char gps_now_valid = (*ptr == '3' || *ptr == '2')?1:0; // The ?: is just in case some compiler decides true is some value other than 1.
 #ifdef DEBUG
     // continue parsing to find the PDOP value
     for(i = 2; i < 15; i++) {

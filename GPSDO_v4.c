@@ -445,7 +445,7 @@ static inline void handleGPS() {
     // $GPGSA,A,3,02,06,12,24,25,29,,,,,,,1.61,1.33,0.90*01
     ptr = skip_commas(ptr, 2);
     if (ptr == NULL) return; // not enough commas
-    gps_locked = (*ptr == '3');
+    gps_locked = (*ptr == '3' || *ptr == '2');
 #ifdef DEBUG
     // continue parsing to find the PDOP value
     ptr = skip_commas(ptr, 13);
