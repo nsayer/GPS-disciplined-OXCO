@@ -60,6 +60,10 @@
 // Define this for the OH300 variant, undef for DOT050V
 #define OH300
 
+// Older hardware had the DIN pin of the DAC hooked to MISO. New versions
+// have it hooked instead to MOSI, so we can use hardware SPI.
+//#define HW_SPI
+
 #ifdef OH300
 // The OH300 variant uses the 18 bit AD5680 DAC instead of the AD5061.
 #define AD5680
@@ -68,6 +72,10 @@
 #if defined(DEBUG)
 // define this to include the serial transmit infrastructure at all
 #define SERIAL_TX
+#endif
+
+#if (defined(HW_SPI) && !defined(__AVR_ATmega328PB__))
+#error HW_SPI is only available with the ATMega328PB variant(s).
 #endif
 
 // To determine the tuning step - that is, the frequency difference between
@@ -155,11 +163,21 @@
 //#define PPS_PIN _BV(PINB0)
 
 #define DAC_PORT PORTB
+#ifdef HW_SPI
+#define DAC_CS _BV(PORTB2)
+#else
 #define DAC_CS _BV(PORTB1)
 #define DAC_DO _BV(PORTB4)
 #define DAC_CLK _BV(PORTB5)
+#endif
 #define DAC_DDR DDRB
+#ifdef HW_SPI
+// MOSI and SCK are handled by SPI, but must still be
+// set to output pins.
+#define DAC_DDR_MSK (_BV(DDB2) | _BV(DDB3) | _BV(DDB5))
+#else
 #define DAC_DDR_MSK (_BV(DDB1) | _BV(DDB4) | _BV(DDB5))
+#endif
 
 // This is an arbitrary midpoint value. We will attempt to coerce the phase error
 // to land at this value.
@@ -236,6 +254,19 @@ static void writeDacValue(unsigned long value) {
 #endif
   // This is the point where we'd OR in any control bits, but there are none we want.
 
+#ifdef HW_SPI
+  // Now we start - Assert !CS
+  DAC_PORT &= ~DAC_CS;
+
+  // send it!
+  SPDR0 = (unsigned char)(value >> 16);
+  while (!(SPSR0 & _BV(SPIF0))) ;
+  SPDR0 = (unsigned char)(value >> 8);
+  while (!(SPSR0 & _BV(SPIF0))) ;
+  SPDR0 = (unsigned char)(value >> 0);
+  while (!(SPSR0 & _BV(SPIF0))) ;
+
+#else
   // Start with the clock pin high.
   DAC_PORT |= DAC_CLK;
   // Now we start - Assert !CS
@@ -248,6 +279,7 @@ static void writeDacValue(unsigned long value) {
     DAC_PORT &= ~DAC_CLK;
     DAC_PORT |= DAC_CLK;
   }
+#endif
   // Raise !CS to end the transfer, which also slews the DAC output.
   DAC_PORT |= DAC_CS;
 }
@@ -506,7 +538,11 @@ void __ATTR_NORETURN__ main() {
 
   // We use Timer1, USART0 and the ADC.
 #ifdef __AVR_ATmega328PB__
+#ifdef HW_SPI
+  PRR0 |= _BV(PRTIM0) | _BV(PRTIM2) | _BV(PRTWI0) | _BV(PRUSART1);
+#else
   PRR0 |= _BV(PRSPI0) | _BV(PRTIM0) | _BV(PRTIM2) | _BV(PRTWI0) | _BV(PRUSART1);
+#endif
   PRR1 |= _BV(PRTIM3) | _BV(PRSPI1) | _BV(PRTIM4) | _BV(PRPTC) | _BV(PRTWI1);
 #else
   PRR |= _BV(PRTWI) | _BV(PRSPI) | _BV(PRTIM2) | _BV(PRTIM0);
@@ -539,6 +575,11 @@ void __ATTR_NORETURN__ main() {
 
   // set up the LED port
   PORTB &= ~(LED0 | LED1); // Turn off both LEDs
+#ifdef HW_SPI
+  // Configure SPI0. Master, fastest speed possible, inverted clock.
+  SPCR0 = _BV(SPE0) | _BV(MSTR0) | _BV(CPOL0);
+  SPSR0 = _BV(SPI2X0);
+#endif
   LED_DDR = 0;
   LED_DDR |= LED_DDR_MSK;
 
