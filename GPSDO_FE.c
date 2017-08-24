@@ -648,14 +648,12 @@ void __ATTR_NORETURN__ main() {
 #endif
 #endif
 
-// If you need to initialize the GPS, then set TXEN, transmit
-// whatever is necessary, then clear TXEN. That will make the
-// controller's TXD line high impedance so that you can talk
-// to the GPS module yourself with the diag port on the board
-// if desired. But with DEBUG on, that won't work, since the
-// controller transmits whenever. The controller can transmit
-// anything it wants - anything that's not a proper NMEA sentence
-// will be ignored by the GPS module.
+// UART0's receiver is GPS NMEA. The transmitter is the diagnostic output.
+// The GPS' RX line is only connected to the diagnostic port - only external
+// systems are allowed to talk to it. UART1 (both TX and RX) go to the oscillator
+// module.
+
+// We don't ever transmit anything when DEBUG is off.
 #ifdef DEBUG
   UCSR0B = _BV(RXCIE0) | _BV(RXEN0) | _BV(TXEN0); // transmit always for debug
 #else
@@ -1066,7 +1064,10 @@ skip:
 #ifdef DEBUG
     {
       char buf[8];
-      tx_pstr(PSTR("MOD="));
+      tx_pstr(PSTR("ADC="));
+      itoa(irq_adc_value, buf, 10);
+      tx_str(buf);
+      tx_pstr(PSTR("\r\nMOD="));
       itoa(mode, buf, 10);
       tx_str(buf);
       tx_pstr(PSTR("\r\n"));
