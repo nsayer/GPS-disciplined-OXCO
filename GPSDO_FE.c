@@ -41,8 +41,18 @@
 #include <avr/pgmspace.h>
 #include <util/atomic.h>
 
+// Define this for the FE-405 variant. It runs at 15 MHz, has different
+// time constants and gain, and lacks an OSC_RDY output (it's always ready).
+//#define FE405
+
+#ifdef FE405
+// 15 MHz.
+#define F_CPU (15000000UL)
+#else
 // 10 MHz.
 #define F_CPU (10000000UL)
+#endif
+
 #include <util/delay.h>
 
 // Serial port baud rate. Used below by serial initialization/reinitialization
@@ -58,43 +68,47 @@
 // instead of listen to the debug log.
 #define DEBUG
 
-// Turn this on to send the WAAS enable sentence at startup.
-//#define WAAS
-
-#if defined(DEBUG) || defined(WAAS)
+#if defined(DEBUG)
 // define this to include the serial transmit infrastructure at all
 #define SERIAL_TX
 // define this to make transmission interrupt driven and buffered rather than blocking
 //#define IRQ_DRIVEN_TX
 #endif
 
-// The FE-5680A's specifications are a tuning range of +/- 383 Hz
+// The FE oscillator specifications are a tuning range of +/- 383 Hz
 // over the range of a 32 bit signed integer, or +/- 38.3 ppm. That's
 // an individual step size of 17.834E-15.
 //
 // However, specification and reality aren't always the same. The
-// unit I have for testing shows that at least near zero its resolution
-// is more like 256 steps per 2E-10 or so - which is something like
-// 50 times less resolution.
+// units I have for testing shows that at least near zero their resolution
+// is far, far lower than that.
 //
 // The ADC measures a phase range of 1 us, which we arbitrarily
 // devide at a midpoint for a range of +/- 512 ns (it's not exactly
 // equal to nanoseconds, but it's close enough for us).
 //
 // The gain is how much we have to nudge the DAC to make 1 ns/sec
-// phase change-rate. That is, to alter the frequency by 1 ppb.
+// phase change-rate. That is, to alter the frequency by 1 ppb (10^9).
 //
 // In this case, however, the gain is too high. A resolution of
-// 17E-15 (or even 860E-15) is beyond the hardware we have to
+// in the 10^-14 or 10^-15 is beyond the hardware we have to
 // measure it. Throwing away some of the low resolution bits makes
 // the math less problematic (a float can only have so many bits
 // of precision).
+//
+// We want the actual GAIN value used to be no higher than a few hundred.
+// We use BIT_REDUCE to throw low order bits away to make it so.
 // Theoretical values:
 //#define BIT_REDUCE (8)
 //#define GAIN (56070 >> BIT_REDUCE)
 // Measured values:
+#ifdef FE405
+#define BIT_REDUCE (8)
+#define GAIN (95238 >> BIT_REDUCE)
+#else
 #define BIT_REDUCE (2)
 #define GAIN (1466 >> BIT_REDUCE)
+#endif
 //
 // In the initial FLL mode, the calculus is slightly different.
 // We expect F_CPU counts between each PPS interrupt. Every count off
@@ -106,9 +120,15 @@
 // What is our loop time constant? We use three different time constants - a
 // faster one when we're outside of a certain range, and a slower
 // one when we're dialed in.
+#ifdef FE405
+#define TC_FAST 100
+#define TC_MED 900 // 0.25 hour
+#define TC_SLOW 1800 // 1/2 hour
+#else
 #define TC_FAST 100
 #define TC_MED 1800 // 0.5 hour
 #define TC_SLOW 7200 // 2 hours
+#endif
 
 //
 // The damping factor is how much we reduce the influence of the integral
@@ -125,7 +145,8 @@
 // The quantization error factor is in ns, but our ADC phase discriminator
 // values aren't precise. the QE_COMPENSATION is the quantization error
 // scaling value that we apply to the raw QE value to add it to the
-// phase discriminator value.
+// phase discriminator value. The ATTiny841 doesn't have enough flash
+// for the extra code.
 #define QE_COMPENSATION 1.5
 #else
 // The ATTiny841 variant can switch from the internal osc to the external once it's ready
@@ -168,6 +189,7 @@
 //#define PPS_PIN _BV(PINA7)
 #endif
 
+#ifndef FE405
 // We watch a single bit from the oscillator that indicates whether or not
 // it has a physics lock. Doing anything while this bit is high is futile.
 #ifdef __AVR_ATmega328PB__
@@ -185,6 +207,7 @@
 #define RDY_PU_PORT PUEA
 // Oddly enough, the definitions for PUEAx and PUEBx are missing.
 #define OSC_RDY_PU _BV(3)
+#endif
 #endif
 
 // This is an arbitrary midpoint value. We will attempt to coerce the phase error
@@ -362,13 +385,6 @@ ISR(USART0_RX_vect) {
 
 const char hexes[] PROGMEM = "0123456789abcdef";
 
-#ifdef WAAS
-static unsigned char charHex(unsigned char h) {
-  if (h > 0xf) return ' ';
-  return pgm_read_byte(&(hexes[h]));
-}
-#endif
-
 static unsigned char hexChar(unsigned char c) {
   if (c >= 'A' && c <= 'F') c += ('a' - 'A'); // make lower case
   const char* outP = strchr_P(hexes, c);
@@ -428,21 +444,6 @@ static void tx_str(const char *buf) {
     tx_char(buf[i]);
 }
 
-#endif
-
-// send a NMEA GPS sentence. Takes the sentence
-// data between the $ and *, exclusive.
-#ifdef WAAS
-static void tx_gps(const char *in) {
-  tx_char('$');
-  tx_pstr(in);
-  tx_char('*');
-  unsigned char sum = 0;
-  for(int i = 0; i < strlen_P(in); i++) sum += pgm_read_byte(&(in[i]));
-  tx_char(charHex(sum >> 8));
-  tx_char(charHex(sum & 0xf));
-  tx_pstr(PSTR("\r\n"));
-}
 #endif
 
 static void reset_pll();
@@ -607,7 +608,11 @@ void __ATTR_NORETURN__ main() {
   // set up the serial port baud rates - 9600 for both
   // uses constants defined above in util/setbaud.h
 #ifdef __AVR_ATmega328PB__
+#ifdef FE405
+#define F_CPU (15000000UL)
+#else
 #define F_CPU (10000000UL)
+#endif
 #include <util/setbaud.h>
   UBRR0H = UBRRH_VALUE;
   UBRR0L = UBRRL_VALUE;
@@ -636,7 +641,11 @@ void __ATTR_NORETURN__ main() {
   UCSR1A = 0;
 #endif
 #undef F_CPU
+#ifdef FE405
+#define F_CPU (15000000UL)
+#else
 #define F_CPU (10000000UL)
+#endif
 #endif
 
 // If you need to initialize the GPS, then set TXEN, transmit
@@ -667,8 +676,10 @@ void __ATTR_NORETURN__ main() {
   SW_PU_PORT |= SW_PU;
 #endif
 
+#ifndef FE405
   RDY_DDR_PORT &= ~(RDY_DDR);
   RDY_PU_PORT |= OSC_RDY_PU;
+#endif
 
   // Set up timer1
   TCCR1A = 0; // Normal mode
@@ -715,32 +726,6 @@ void __ATTR_NORETURN__ main() {
 #endif
 #ifdef IRQ_DRIVEN_TX
   txbuf_head = txbuf_tail = 0; // clear the transmit buffer
-#endif
-#endif
-
-#ifdef WAAS
-#ifndef DEBUG
-  UCSR0B |= _BV(TXEN0); // turn on the UART TX just for this one operation
-#endif
-  // brief pause to insure the GPS is listening
-  _delay_ms(100);
-  wdt_reset(); // that took a while
-  // This sentence turns on WAAS reception
-  tx_gps(PSTR("PMTK301,2"));
-#ifndef DEBUG
-  // wait for the transmit buffer to drain.
-#ifdef IRQ_DRIVEN_TX
-  char done;
-  do {
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-      done = txbuf_head == txbuf_tail;
-    }
-    wdt_reset();
-  } while(!done);
-#else
-  while (!(UCSR0A & _BV(UDRE0))) wdt_reset(); 
-#endif
-  UCSR0B &= ~_BV(TXEN0); // turn off the UART TX
 #endif
 #endif
 
@@ -814,7 +799,9 @@ skip:
     // Pet the dog
     wdt_reset();
 
+#ifndef FE405
     unsigned char osc_locked = (RDY_PORT & OSC_RDY) == 0;
+#endif
 
     // with debug firmware, the 0 bit is the GPS status and the 1 bit is
     // whether we've logged that status since the last change or not.
@@ -836,6 +823,7 @@ skip:
         }
       }
     }
+#ifndef FE405
     if (osc_locked != last_osc_locked) {
       last_osc_locked = osc_locked;
       if (osc_locked) {
@@ -850,6 +838,7 @@ skip:
         reset_pll();
       }
     }
+#endif
 
 #ifdef OSC_SEL
     if (osc_locked && (CLKCR & 0x1f)) {
@@ -877,7 +866,11 @@ skip:
       // And now that we've changed the system clock, we need to fix the USART
       // baud rate dividers.
 #undef F_CPU
+#ifdef FE405
+#define F_CPU (15000000UL)
+#else
 #define F_CPU (10000000UL)
+#endif
 #include <util/setbaud.h>
       UBRR0H = UBRRH_VALUE;
       UBRR0L = UBRRL_VALUE;
@@ -896,7 +889,11 @@ skip:
     }
 #endif
 
+#ifdef FE405
+#define unlocked (!gps_locked)
+#else
     unsigned char unlocked = (!gps_locked) || (!osc_locked);
+#endif
     // next, take care of the LEDs.
     // If we're unlocked, then blink them back and forth at 2 Hz.
     // Otherwise, put the binary value of "mode" on the two LEDs.
