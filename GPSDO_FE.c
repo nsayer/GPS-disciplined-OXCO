@@ -155,10 +155,16 @@
 
 #ifdef __AVR_ATmega328PB__
 #define LED_PORT PORTD
+// We exercise the hardware watchdog by toggling, which happens
+// when you write to the input port.
+#define WD_PORT PIND
+#define WD_BIT _BV(PORTD7)
 #define LED0 _BV(PORTD4)
 #define LED1 _BV(PORTD5)
 #define LED_DDR_PORT DDRD
 #define LED_DDR (_BV(DDRD4) | _BV(DDRD5))
+#define WD_DDR_PORT DDRD
+#define WD_DDR (_BV(DDRD7))
 #define SW_DDR_PORT DDRD
 #define SW_DDR (_BV(DDRD6))
 #define SW_PORT PIND
@@ -267,12 +273,30 @@ unsigned char button_down;
 unsigned int button_blink_time;
 #endif
 
+static void inline do_wdt_reset() __attribute__ ((always_inline));
+static void inline do_wdt_reset() {
+	wdt_reset();
+#ifdef __AVR_ATmega328PB__
+	// We just need to toggle this line more frequently than
+	// once every millisecond or so.
+	WD_PORT |= WD_BIT;
+#endif
+}
+
+// same as _delay_ms(), but pet the watchdog doing it
+static void inline do_delay_ms(unsigned int time) {
+	while(time-- > 0) {
+		do_wdt_reset();
+		_delay_ms(1);
+	}
+}
+
 // The oscillator UART isn't done with interrupts. The commands
-// are quite brief, so blocking is ok.
+// are quite brief, so blocking is ok, provided you pet the watchdogs.
 static void tx_osc_byte(const unsigned char c) {
-  while (!(UCSR1A & _BV(UDRE1))) ; //wdt_reset(); // XXX no WD reset
-  wdt_reset();
-  _delay_ms(2); // put a gap between chars.
+  while (!(UCSR1A & _BV(UDRE1))) ; //do_wdt_reset(); // XXX no WD reset
+  do_wdt_reset();
+  do_delay_ms(2); // put a gap between chars.
   UDR1 = c;
 }
 
@@ -282,7 +306,7 @@ static unsigned int rx_osc_byte() {
   while(!(UCSR1A & _BV(RXC0))) {
     // wait up to a quarter second, then bail.
     if (timer_hibits - start_hibits > 38) return 0xffff;
-    wdt_reset();
+    do_wdt_reset();
   }
   unsigned char out = UDR1;
   return out;
@@ -417,7 +441,7 @@ static void tx_char(const char c) {
       buf_in_use = txbuf_head - txbuf_tail;
     }
     if (buf_in_use < 0) buf_in_use += TX_BUF_LEN;
-    wdt_reset(); // we might be waiting a while.
+    do_wdt_reset(); // we might be waiting a while.
   } while (buf_in_use >= TX_BUF_LEN - 2) ; // wait for room in the transmit buffer
 
   txbuf[txbuf_head] = c;
@@ -429,7 +453,7 @@ static void tx_char(const char c) {
   UCSR0B |= _BV(UDRIE0); // enable the TX interrupt. If it was disabled, then it will trigger one now.
 #else
   // wait for TX buf to drain
-  while (!(UCSR0A & _BV(UDRE0))) wdt_reset(); 
+  while (!(UCSR0A & _BV(UDRE0))) do_wdt_reset(); 
   UDR0 = c;
 #endif
 }
@@ -592,10 +616,17 @@ void __ATTR_NORETURN__ main() {
   // This must be done as early as possible to prevent the watchdog from biting during reset.
   unsigned char mcusr_value = MCUSR;
   MCUSR = 0;
-  wdt_enable(WDTO_500MS);
+  wdt_enable(WDTO_15MS);
 
-  _delay_ms(250);
-  wdt_reset();
+#ifdef __AVR_ATmega328PB__
+  // The 328PB variant has a hardware watchdog because the 5680 can
+  // sometimes glitch the clock enough during startup to wedge the controller.
+  // It has a 3 ms timeout, so it must be enabled very early.
+  WD_DDR_PORT |= WD_DDR;
+#endif
+
+  do_delay_ms(250);
+  do_wdt_reset();
 
   // We use Timer1, USART0, USART1 and the ADC.
 #ifdef __AVR_ATmega328PB__
@@ -670,6 +701,7 @@ void __ATTR_NORETURN__ main() {
   LED_DDR_PORT |= LED_DDR;
   LED_PORT &= ~(LED0 | LED1); // Turn off both LEDs
 #ifdef __AVR_ATmega328PB__
+  // The 328PB variant has a button
   SW_DDR_PORT &= ~(SW_DDR);
   SW_PU_PORT |= SW_PU;
 #endif
@@ -733,23 +765,11 @@ void __ATTR_NORETURN__ main() {
 #ifdef __AVR_ATmega328PB__
   tx_pstr(PSTR("\r\n\r\nSTART\r\n"));
 #endif
-/*
-//#ifndef __AVR_ATmega328PB__
-  {
-    tx_pstr(PSTR("\r\n\r\nRES:"));
-    char buf[8];
-    ltoa(mcusr_value, buf, 10);
-    tx_str(buf);
-    tx_pstr(PSTR("\r\n"));
-  }
-//#else
-*/
   // one and only one of these should always be printed
   if (mcusr_value & _BV(PORF)) tx_pstr(PSTR("RES_PO\r\n")); // power-on reset
   if (mcusr_value & _BV(EXTRF)) tx_pstr(PSTR("RES_EXT\r\n")); // external reset
   if (mcusr_value & _BV(BORF)) tx_pstr(PSTR("RES_BO\r\n")); // brown-out reset
   if (mcusr_value & _BV(WDRF)) tx_pstr(PSTR("RES_WD\r\n")); // watchdog reset
-//#endif
 #endif
 
   last_dac_value = 0x7fffffffL; // unlikely
@@ -760,7 +780,7 @@ void __ATTR_NORETURN__ main() {
   tx_osc_byte(0x04); // length LSB
   tx_osc_byte(0x00); // length MSB
   tx_osc_byte(0x29); // cksum
-  wdt_reset();
+  do_wdt_reset();
   if (rx_osc_byte() != 0x2d) goto skip;
   if (rx_osc_byte() != 0x09) goto skip;
   if (rx_osc_byte() != 0x00) goto skip;
@@ -774,7 +794,7 @@ void __ATTR_NORETURN__ main() {
     tmp |= ((unsigned char)val) << (i * 8);
   }
   if (rx_osc_byte() != cksum) goto skip;
-  wdt_reset();
+  do_wdt_reset();
   last_dac_value = (long)tmp;
   trim_value = (double)last_dac_value;
 skip:
@@ -795,7 +815,7 @@ skip:
     static unsigned long last_pps_count = 0;
  
     // Pet the dog
-    wdt_reset();
+    do_wdt_reset();
 
 #ifndef FE405
     unsigned char osc_locked = (RDY_PORT & OSC_RDY) == 0;
@@ -852,11 +872,11 @@ skip:
         ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
           tx_buf_empty = (txbuf_head == txbuf_tail);
         }
-        wdt_reset();
+        do_wdt_reset();
       } while(!tx_buf_empty);
 #endif
-      _delay_ms(20); // clear out the transmit buffer
-      wdt_reset();
+      do_delay_ms(20); // clear out the transmit buffer
+      do_wdt_reset();
 
       CCP = 0xd8;
       CLKCR = _BV(CSTR) | _BV(CKOUTC);
