@@ -27,7 +27,7 @@
 
 // ext osc, long startup time, 4.3v brownout, preserve EEPROM, no self-programming
 // ATTiny841 Fuse settings: lfuse=0xe2, hfuse = 0xd4, efuse = 0x1
-// ATMega328PB Fuse settings: lfuse=0xe0, hfuse = 0xd7, efuse = 0xfc
+// ATMega328PB Fuse settings: lfuse=0xc0, hfuse = 0xd7, efuse = 0xfc
 
 #include <stdlib.h>  
 #include <stdio.h>  
