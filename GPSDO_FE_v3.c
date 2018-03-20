@@ -652,13 +652,13 @@ void __ATTR_NORETURN__ main() {
 #ifdef DEBUG
   tx_pstr(PSTR("\r\n\r\nSTART\r\n"));
   // only one of these should ever print out.
-  if (reset_status & RST_SDRF_bm) tx_pstr(PSTR("RST_SPIKE"));
-  if (reset_status & RST_SRF_bm) tx_pstr(PSTR("RST_SW"));
-  if (reset_status & RST_PDIRF_bm) tx_pstr(PSTR("RST_PDI"));
-  if (reset_status & RST_WDRF_bm) tx_pstr(PSTR("RST_WD"));
-  if (reset_status & RST_BORF_bm) tx_pstr(PSTR("RST_BO"));
-  if (reset_status & RST_EXTRF_bm) tx_pstr(PSTR("RST_EXT"));
-  if (reset_status & RST_PORF_bm) tx_pstr(PSTR("RST_PO"));
+  if (reset_status & RST_SDRF_bm) tx_pstr(PSTR("RST_SPIKE\r\n"));
+  if (reset_status & RST_SRF_bm) tx_pstr(PSTR("RST_SW\r\n"));
+  if (reset_status & RST_PDIRF_bm) tx_pstr(PSTR("RST_PDI\r\n"));
+  if (reset_status & RST_WDRF_bm) tx_pstr(PSTR("RST_WD\r\n"));
+  if (reset_status & RST_BORF_bm) tx_pstr(PSTR("RST_BO\r\n"));
+  if (reset_status & RST_EXTRF_bm) tx_pstr(PSTR("RST_EXT\r\n"));
+  if (reset_status & RST_PORF_bm) tx_pstr(PSTR("RST_PO\r\n"));
 #endif
 
   last_dac_value = 0x7fffffffL; // unlikely
