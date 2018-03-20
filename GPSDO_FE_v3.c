@@ -520,6 +520,18 @@ static unsigned char check_buttons() {
 }
 
 void __ATTR_NORETURN__ main() {
+  unsigned char reset_status = RST.STATUS;
+  RST.STATUS = 0xff; // clear them all out
+
+  // set up the watchdog
+  //wdt_enable(WDTO_1S); // This is broken on XMegas.
+  // This replacement code doesn't disable interrupts (but they're not on now anyway)
+  _PROTECTED_WRITE(WDT.CTRL, WDT_PER_256CLK_gc | WDT_ENABLE_bm | WDT_CEN_bm);
+  while(WDT.STATUS & WDT_SYNCBUSY_bm) ; // wait for it to take
+  // We don't want a windowed watchdog.
+  _PROTECTED_WRITE(WDT.WINCTRL, WDT_WCEN_bm);
+  while(WDT.STATUS & WDT_SYNCBUSY_bm) ; // wait for it to take
+
   // At boot, configure the internal RC oscillator for 30 MHz.
   // Run the CPU at 30 MHz using the RC osc and DFLL set for 30 MHz.
   OSC.CTRL |= OSC_RC32MEN_bm | OSC_RC32KEN_bm;
@@ -540,14 +552,6 @@ void __ATTR_NORETURN__ main() {
 
   _PROTECTED_WRITE(CLK.CTRL, CLK_SCLKSEL_RC32M_gc); // switch to it
   OSC.CTRL &= ~(OSC_RC2MEN_bm); // we're done with the 2 MHz osc.
-
-  //wdt_enable(WDTO_1S); // This is broken on XMegas.
-  // This replacement code doesn't disable interrupts (but they're not on now anyway)
-  _PROTECTED_WRITE(WDT.CTRL, WDT_PER_256CLK_gc | WDT_ENABLE_bm | WDT_CEN_bm);
-  while(WDT.STATUS & WDT_SYNCBUSY_bm) ; // wait for it to take
-  // We don't want a windowed watchdog.
-  _PROTECTED_WRITE(WDT.WINCTRL, WDT_WCEN_bm);
-  while(WDT.STATUS & WDT_SYNCBUSY_bm) ; // wait for it to take
 
   do_delay_ms(250); // let the FLL do its magic.
 
@@ -647,6 +651,14 @@ void __ATTR_NORETURN__ main() {
 
 #ifdef DEBUG
   tx_pstr(PSTR("\r\n\r\nSTART\r\n"));
+  // only one of these should ever print out.
+  if (reset_status & RST_SDRF_bm) tx_pstr(PSTR("RST_SPIKE"));
+  if (reset_status & RST_SRF_bm) tx_pstr(PSTR("RST_SW"));
+  if (reset_status & RST_PDIRF_bm) tx_pstr(PSTR("RST_PDI"));
+  if (reset_status & RST_WDRF_bm) tx_pstr(PSTR("RST_WD"));
+  if (reset_status & RST_BORF_bm) tx_pstr(PSTR("RST_BO"));
+  if (reset_status & RST_EXTRF_bm) tx_pstr(PSTR("RST_EXT"));
+  if (reset_status & RST_PORF_bm) tx_pstr(PSTR("RST_PO"));
 #endif
 
   last_dac_value = 0x7fffffffL; // unlikely
