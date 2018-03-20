@@ -574,7 +574,7 @@ void __ATTR_NORETURN__ main() {
 
   PORTD.DIRCLR = _BV(2) | SW_BIT; // input on switch and serial in
   PORTD.DIRSET = _BV(3) | LED0 | LED1; // output on serial out and LEDs
-  PORTD.PIN7CTRL = PORT_OPC_PULLUP_gc; // pull-up on switch
+  PORTD.PIN5CTRL = PORT_OPC_PULLUP_gc; // pull-up on switch
 
   USARTC0.CTRLA = USART_RXCINTLVL_LO_gc; // interrupt on receive (DRE set later).
   USARTC0.CTRLB = USART_RXEN_bm | USART_TXEN_bm; // enable transmitter and receiver
