@@ -150,7 +150,7 @@
 // Port D has osc serial on 2 and 3 and...
 #define LED0 _BV(6)
 #define LED1 _BV(7)
-#define SW_BIT _BV(6)
+#define SW_BIT _BV(5)
 
 // This is about 500 ms
 #define BUTTON_BLINK_TICKS (F_CPU / 2)
