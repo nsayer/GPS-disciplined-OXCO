@@ -293,13 +293,6 @@ ISR(TCC5_CCA_vect) {
   // wait for ADC to finish
   while(!(ADCA.CH0.INTFLAGS & ADC_CH_IF_bm)) ; // don't pet the watchdog - this should never take that long.
   unsigned int adc_value = ADCA.CH0.RES;
-  // Sample again
-  ADCA.CH0.INTFLAGS = ADC_CH_IF_bm;
-  ADCA.CH0.CTRL |= ADC_CH_START_bm;
-  while(!(ADCA.CH0.INTFLAGS & ADC_CH_IF_bm)) ;
-  adc_value += ADCA.CH0.RES;
-  // average it
-  adc_value /= 2;
 
   irq_adc_value = adc_value;
 
@@ -537,6 +530,8 @@ void __ATTR_NORETURN__ main() {
   NVM.CMD = NVM_CMD_READ_CALIB_ROW_gc;
   DFLLRC32M.CALA = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, RCOSC32MA));
   DFLLRC32M.CALB = (unsigned char)((((unsigned int)pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, RCOSC32M))) * 15) / 16); // scale 32 -> 30
+  unsigned char adcacal0 = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, ADCACAL0));
+  unsigned char adcacal1 = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, ADCACAL1));
   NVM.CMD = NVM_CMD_NO_OPERATION_gc;
   // Set the target frequency to 30 MHz.
   DFLLRC32M.COMP1 = (F_CPU / 1024) & 0xff;
@@ -598,20 +593,16 @@ void __ATTR_NORETURN__ main() {
 
   // set up the ADC
   ADCA.CTRLA = ADC_ENABLE_bm; // enable.
+  ADCA.CALL = adcacal0; // Load factory calibration into the ADC
+  ADCA.CALH = adcacal1;
   ADCA.CTRLB = ADC_CONMODE_bm; // signed mode
-  ADCA.PRESCALER = ADC_PRESCALER_DIV512_gc; // ~58 kHz
-  ADCA.REFCTRL = ADC_REFSEL_INTVCC2_gc; // Vcc/2 reference | ADC_BANDGAP_bm; // 1.0V reference.
+  ADCA.PRESCALER = ADC_PRESCALER_DIV256_gc; // ~116 kHz
+  ADCA.REFCTRL = ADC_REFSEL_INTVCC2_gc; // Vcc/2 reference
   ADCA.EVCTRL = 0; // no event control
-  ADCA.CH0.CTRL = ADC_CH_INPUTMODE_DIFFWGAINL_gc; // differential, no gain.
+  ADCA.CH0.CTRL = ADC_CH_INPUTMODE_DIFFWGAINL_gc; // differential, unity gain.
   ADCA.CH0.MUXCTRL = ADC_CH_MUXPOS_PIN1_gc | ADC_CH_MUXNEGL_GND_gc; // input on pin A1, negative pad ground.
   ADCA.CH0.INTCTRL = 0; // no interrupts
-  ADCA.CH0.AVGCTRL = 0; // no oversampling
-
-  // Load factory calibration into the ADC
-  NVM.CMD = NVM_CMD_READ_CALIB_ROW_gc;
-  ADCA.CALL = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, ADCACAL0));
-  ADCA.CALH = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, ADCACAL1));
-  NVM.CMD = NVM_CMD_NO_OPERATION_gc;
+  ADCA.CH0.AVGCTRL = (2 << ADC_CH_RIGHTSHIFT_gp) | ADC_SAMPNUM_4X_gc; // 4x oversampling
 
   // TCC4 and 5 are a 32 bit cascaded counter with cascaded capture (on PPS).
   TCC4.CTRLA = TC45_CLKSEL_DIV1_gc; // 30 MHz timer clocking
