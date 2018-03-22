@@ -252,7 +252,7 @@ static unsigned int rx_osc_byte() {
     if ((timer_value() - start_time) > (F_CPU / 4)) return 0xffff;
     wdt_reset();
   }
-  unsigned char out = UDR1;
+  unsigned char out = USARTD0.DATA;
   return out;
 }
 #endif
