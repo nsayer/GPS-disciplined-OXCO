@@ -3,17 +3,15 @@ Firmware for http://hackaday.io/project/6872-gps-disciplined-ocxo
 
 To build:
 
-First, edit GPSDO_v3.c and change any options. In particular, make sure the OH300 option is commented in or out
-depending on your hardware.
+First, edit GPSDO_v6.c and change the include file for the oscillator you want.
 
-    avr-gcc -Wall -g -Os -ffreestanding -std=c99 -mmcu=attiny841 -c GPSDO_v3.c
-    avr-gcc -Wall -g -Os -ffreestanding -std=c99 -mmcu=attiny841 GPSDO_v3.o -o GPSDO_v3.elf
-    avr-objcopy -j .data -j .text -O ihex GPS_disciplined_ocxo_4313.elf GPSDO_v3.hex
+    avr-gcc -Wall -Wno-main -g -Os -std=c11 -mmcu=atxmega32e5 -c GPSDO_v6.c
+    avr-gcc -Wall -Wno-main -g -Os -std=c11 -mmcu=atxmega32e5 GPSDO_v6.o -o GPSDO_v6.elf
+    avr-objcopy -j .data -j .text -O ihex GPSDO_v6.elf GPSDO_v6.hex
 
-To initialize a new chip for this project (it's a good idea to insure that the clock input pin on the chip is getting a square wave before doing this):
+To initialize a new chip for this project connect a PDI programmer and:
 
-    avrdude -c {programmer} -p attiny841 -U lfuse:w:0xe0:m -U hfuse:w:0xd4:m -U efuse:w:0xff:m
-    avrdude -c {programmer} -p attiny841 -U flash:w:GPSDO_v3.hex
+    avrdude -c {programmer} -p atxmega32e5 -U flash:w:GPSDO_v6.hex
 
 With DEBUG turned on, you should see the following items on the serial output:
 
