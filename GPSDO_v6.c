@@ -983,7 +983,7 @@ void __ATTR_NORETURN__ main() {
     // Since our ADC is 11 bits and the pulse is a microsecond wide we can fudge a little
     // and claim that each ADC count is 500 picoseconds. So left shift once and then
     // current and average phase error is in nanoseconds and is wrapped.
-    int current_phase_error = (PHASE_ADC_MIDPOINT - ((int)irq_adc_value)) >> 1;
+    int current_phase_error = (PHASE_ADC_MIDPOINT - ((int)irq_adc_value)) / 2;
 
     current_phase_error += (int)((QE_COMPENSATION * pps_err) + 0.5); // quant error correction is in ns. Round to nearest
 
