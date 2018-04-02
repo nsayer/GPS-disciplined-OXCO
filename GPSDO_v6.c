@@ -578,6 +578,18 @@ void __ATTR_NORETURN__ main() {
   DFLLRC32M.CALB = (unsigned char)((((unsigned int)pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, RCOSC32M))) * 15) / 16); // scale 32 -> 30
   unsigned char adcacal0 = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, ADCACAL0));
   unsigned char adcacal1 = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, ADCACAL1));
+  unsigned char serial[11];
+  serial[0] = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, LOTNUM0));
+  serial[1] = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, LOTNUM1));
+  serial[2] = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, LOTNUM2));
+  serial[3] = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, LOTNUM3));
+  serial[4] = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, LOTNUM4));
+  serial[5] = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, LOTNUM5));
+  serial[6] = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, WAFNUM));
+  serial[7] = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, COORDX1));
+  serial[8] = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, COORDX0));
+  serial[9] = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, COORDY1));
+  serial[10] = pgm_read_byte(offsetof(NVM_PROD_SIGNATURES_t, COORDY0));
   NVM.CMD = NVM_CMD_NO_OPERATION_gc;
   // Set the target frequency to 30 MHz.
   DFLLRC32M.COMP1 = (F_CPU / 1024) & 0xff;
@@ -723,6 +735,33 @@ void __ATTR_NORETURN__ main() {
 
 #ifdef DEBUG
   tx_pstr(PSTR("\r\n\r\nSTART\r\n"));
+
+  tx_pstr(PSTR("SERIAL "));
+  for(int i = 0; i < 6; i++) {
+    tx_char(serial[i]);
+  }
+  char buf[5];
+  tx_pstr(PSTR("-"));
+  itoa(serial[6], buf, 10);
+  tx_str(buf);
+  tx_pstr(PSTR("-"));
+  itoa(serial[7] << 8 | serial[8], buf, 16);
+  tx_str(buf);
+  tx_pstr(PSTR("-"));
+  itoa(serial[9] << 8 | serial[10], buf, 16);
+  tx_str(buf);
+  tx_pstr(PSTR("\r\n"));
+
+  tx_pstr(PSTR("DEVICE "));
+  for(int i = 0; i < 3; i++) {
+    itoa(*(&MCU.DEVID0 + i) >> 4, buf, 16);
+    itoa(*(&MCU.DEVID0 + i) & 0xf, buf + 1, 16);
+    tx_str(buf);
+  }
+  tx_pstr(PSTR("-"));
+  tx_char(MCU.REVID + 'A');
+  tx_pstr(PSTR("\r\n"));
+
   // only one of these should ever print out.
   if (reset_status & RST_SDRF_bm) tx_pstr(PSTR("RST_SPIKE\r\n"));
   if (reset_status & RST_SRF_bm) tx_pstr(PSTR("RST_SW\r\n"));
