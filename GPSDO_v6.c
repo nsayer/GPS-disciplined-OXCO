@@ -881,6 +881,23 @@ void __ATTR_NORETURN__ main() {
       continue;
     }
 
+    // If the FE oscillator unlocks any time after it locks, then just start
+    // all the way over.
+    if (!osc_locked && (CLK.CTRL & CLK_SCLKSEL_gm) == CLK_SCLKSEL_PLL_gc) {
+	tx_pstr("FE_FAIL\r\n\r\n");
+        unsigned char tx_buf_empty = 0;
+        do {
+          ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+            tx_buf_empty = (txbuf_head == txbuf_tail);
+          }   
+          wdt_reset();
+        } while(!tx_buf_empty);
+        do_delay_ms(20); // clear out the transmit buffer
+        cli(); // disable interrupts
+        _PROTECTED_WRITE(RST.CTRL, RST_SWRST_bm); // sepuku
+	while(1); // terminal wait
+    }
+
     unsigned char unlocked = (!gps_locked) || (!osc_locked);
     // next, take care of the LEDs.
     // If we're unlocked, then blink them back and forth at 2 Hz.
