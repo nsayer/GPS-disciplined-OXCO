@@ -697,7 +697,7 @@ void __ATTR_NORETURN__ main() {
   TCC4.CTRLD = TC45_EVSEL_CH0_gc; // capture on event 0
   TCC4.CTRLE = TC45_CCBMODE_CAPT_gc | TC45_CCAMODE_CAPT_gc;
   TCC4.INTCTRLA = 0;
-  TCC5.INTCTRLB = 0; // we're going to interrupt from TC5
+  TCC4.INTCTRLB = 0; // we're going to interrupt from TC5
 
   TCC5.CTRLA = TC45_CLKSEL_EVCH4_gc; // Clock from timer 4's overflow
   TCC5.CTRLB = 0;
