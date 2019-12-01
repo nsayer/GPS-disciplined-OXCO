@@ -8,7 +8,7 @@ OUT=GPSDO_v6
 CC = avr-gcc
 OBJCPY = avr-objcopy
 AVRDUDE = avrdude
-OPTS = -Os -g -std=c11 -Wall -Wno-main
+OPTS = -Os -g -std=c11 -Wall -Wno-main -fno-tree-switch-conversion
 
 CFLAGS = -mmcu=$(CHIP) $(OPTS)
 
