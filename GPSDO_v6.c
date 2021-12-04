@@ -48,8 +48,16 @@
 #include <util/delay.h>
 
 // Serial port baud rate constants - 9600 baud at 30 MHz.
-#define BSEL (777)
-#define BSCALE (-2)
+#define BSEL_OSC (777)
+#define BSCALE_OSC (-2)
+#ifdef PX1100T
+// 115200 at 30 MHz.
+#define BSEL_GPS (489)
+#define BSCALE_GPS (-5)
+#else
+#define BSEL_GPS BSEL_OSC
+#define BSCALE_GPS BSCALE_OSC
+#endif
 
 /************************************************
  *
@@ -57,11 +65,14 @@
  *
  */
 
+// Define this for the PX1100T, undef for Venus838LPx-T
+#define PX1100T
+
 //Pick your oscillator:
 
-//#include "fe405b.h"
 //#include "fe56x0a.h"
 #include "oh300.h"
+//#include "fe405b.h"
 //#include "ecoc2522.h"
 //#include "dot050v.h"
 
@@ -74,15 +85,6 @@
 #define DAC_RANGE (0xffff)
 #endif
 #define DAC_MIDPOINT (DAC_RANGE >> 1)
-#endif
-
-// Turn on debug logging. There's really no longer any point to turning
-// this off.
-#define DEBUG
-
-#if defined(DEBUG)
-// define this to include the serial transmit infrastructure at all
-#define SERIAL_TX
 #endif
 
 // In the initial FLL mode, the calculus is slightly different.
@@ -104,8 +106,7 @@
 // The quantization error factor is in ns, but our ADC phase discriminator
 // values aren't precise. the QE_COMPENSATION is the quantization error
 // scaling value that we apply to the raw QE value to add it to the
-// phase discriminator value. The ATTiny841 doesn't have enough flash
-// for the extra code.
+// phase discriminator value.
 #define QE_COMPENSATION 1.5
 
 // Port A has the phase discriminator output (for ADC) on 1.
@@ -137,6 +138,7 @@
 #endif
 
 // Port D has osc serial on 2 and 3 and...
+#define LED_FIX _BV(4)
 #define LED0 _BV(6)
 #define LED1 _BV(7)
 // Serial DAC units have a switch
@@ -161,9 +163,7 @@
 
 // Note that if you ever want to parse a longer sentence, be sure to bump this up.
 #define RX_BUF_LEN (96)
-#ifdef SERIAL_TX
 #define TX_BUF_LEN (128)
-#endif
 
 // The start mode watches the cycle count error over a 10 second window, and
 // adjusts the DAC until a minute goes by without any errors.
@@ -196,16 +196,11 @@ volatile unsigned long irq_time_span;
 unsigned char last_osc_locked;
 unsigned char last_gps_locked;
 volatile unsigned char pps_err_buf[5];
-#ifdef DEBUG
-volatile unsigned char pdop_buf[5];
 volatile unsigned char time_buf[7];
 volatile unsigned char date_buf[7];
-#endif
-#ifdef SERIAL_TX
 // serial transmit buffer setup
 volatile char txbuf[TX_BUF_LEN];
 volatile unsigned int txbuf_head, txbuf_tail;
-#endif
 #ifdef SW_BIT
 unsigned long debounce_time;
 unsigned char button_down;
@@ -338,6 +333,8 @@ ISR(TCC5_CCA_vect) {
 
   pps_count++;
 
+  if (gps_locked)
+    PORTD.OUTTGL = LED_FIX; // toggle FIX - blink it at 1/2 Hz
 }
 
 static inline void handleGPS();
@@ -368,7 +365,6 @@ static unsigned char hexChar(unsigned char c) {
   return (unsigned char)(outP - hexes);
 }
 
-#ifdef SERIAL_TX
 ISR(USARTC0_DRE_vect) {
   if (txbuf_head == txbuf_tail) {
     // the transmit queue is empty.
@@ -412,7 +408,6 @@ static void tx_str(const char *buf) {
   for(int i = 0; i < strlen(buf); i++)
     tx_char(buf[i]);
 }
-#endif
 
 static void reset_pll();
 
@@ -451,32 +446,25 @@ static inline void handleGPS() {
   }
   
   char *ptr = (char *)rx_buf;
-  if (!strncmp_P((const char*)rx_buf, PSTR("$GPRMC"), 6)) {
+  if (!strncmp_P((const char*)rx_buf, PSTR(
+#ifdef PX1100T
+					"$GNRMC"
+#else
+					"$GPRMC"
+#endif
+					), 6)) {
     // $GPRMC,172313.000,A,xxxx.xxxx,N,xxxxx.xxxx,W,0.01,180.80,260516,,,D*74\x0d\x0a
-#ifdef DEBUG
     ptr = skip_commas(ptr, 1);
     if (ptr == NULL) return; // not enough commas
     strncpy((char *)time_buf, ptr, 6);
     time_buf[sizeof(time_buf) - 1] = 0;
-    ptr = skip_commas(ptr, 8);
+    ptr = skip_commas(ptr, 1);
+    if (ptr == NULL) return; // not enough commas
+    gps_locked = *ptr == 'A'; // A = AOK.
+    ptr = skip_commas(ptr, 7);
     if (ptr == NULL) return; // not enough commas
     strncpy((char *)date_buf, ptr, 6);
     date_buf[sizeof(date_buf) - 1] = 0;
-#endif
-  } else if (!strncmp_P((const char*)rx_buf, PSTR("$GPGSA"), 6)) {
-    // $GPGSA,A,3,02,06,12,24,25,29,,,,,,,1.61,1.33,0.90*01
-    ptr = skip_commas(ptr, 2);
-    if (ptr == NULL) return; // not enough commas
-    gps_locked = (*ptr == '3' || *ptr == '2');
-#ifdef DEBUG
-    // continue parsing to find the PDOP value
-    ptr = skip_commas(ptr, 13);
-    if (ptr == NULL) return; // not enough commas
-    unsigned char len = (strchr((const char *)ptr, ',')) - ptr;
-    if (len > sizeof(pdop_buf) - 1) len = sizeof(pdop_buf) - 1; // truncate if too long
-    memcpy((void*)pdop_buf, ptr, len);
-    pdop_buf[len] = 0; // null terminate
-#endif
   } else if (!strncmp_P((const char*)rx_buf, PSTR("$PSTI,00"), 8)) {
     // $PSTI,00,2,0,5.8,,*3F
     ptr = skip_commas(ptr, 4);
@@ -624,12 +612,11 @@ void __ATTR_NORETURN__ main() {
 
   PORTC.DIRCLR = _BV(0) | SER_RX; // PPS and GPS serial input
   PORTC.PIN0CTRL = PORT_ISC_RISING_gc; // send an event on the PPS rising edge
-#ifdef SERIAL_TX
   PORTC.OUTSET = SER_TX; // serial output defaults to high
   PORTC.DIRSET = SER_TX; // serial output
-#endif
 
-  PORTD.DIRSET = LED0 | LED1; // output on LEDs
+  PORTD.DIRSET = LED0 | LED1 | LED_FIX; // output on LEDs
+  PORTD.OUTSET = LED_FIX; // start with FIX on
 
 #ifdef OSC_RDY
   PORTC.DIRCLR = OSC_RDY;
@@ -653,15 +640,11 @@ void __ATTR_NORETURN__ main() {
 #endif
 
   USARTC0.CTRLA = USART_RXCINTLVL_LO_gc; // interrupt on receive (DRE set later).
-#ifdef SERIAL_TX
   USARTC0.CTRLB = USART_RXEN_bm | USART_TXEN_bm; // enable transmitter and receiver
-#else
-  USARTC0.CTRLB = USART_RXEN_bm; // enable receiver
-#endif
   USARTC0.CTRLC = USART_CHSIZE_8BIT_gc; // 8N1 async.
   USARTC0.CTRLD = 0; // no special processing
-  USARTC0.BAUDCTRLA = (BSEL & 0xff);
-  USARTC0.BAUDCTRLB = (BSCALE << USART_BSCALE_gp) | (BSEL >> 8);
+  USARTC0.BAUDCTRLA = (BSEL_GPS & 0xff);
+  USARTC0.BAUDCTRLB = (BSCALE_GPS << USART_BSCALE_gp) | (BSEL_GPS >> 8);
 
 #ifdef SPI_DAC
   SPIC.CTRL = SPI_CLK2X_bm | SPI_ENABLE_bm | SPI_MASTER_bm | SPI_MODE_0_gc | SPI_PRESCALER_DIV4_gc; // master, enable, mode 0 and FAST
@@ -673,8 +656,8 @@ void __ATTR_NORETURN__ main() {
   USARTD0.CTRLB = USART_RXEN_bm | USART_TXEN_bm;
   USARTD0.CTRLC = USART_CHSIZE_8BIT_gc; // 8N1 async.
   USARTD0.CTRLD = 0; // no special processing
-  USARTD0.BAUDCTRLA = (BSEL & 0xff);
-  USARTD0.BAUDCTRLB = (BSCALE << USART_BSCALE_gp) | (BSEL >> 8);
+  USARTD0.BAUDCTRLA = (BSEL_OSC & 0xff);
+  USARTD0.BAUDCTRLB = (BSCALE_OSC << USART_BSCALE_gp) | (BSEL_OSC >> 8);
 #endif
 
   // set up the ADC
@@ -720,20 +703,14 @@ void __ATTR_NORETURN__ main() {
   button_down = 0;
   button_blink_time = 0;
 #endif
-#ifdef DEBUG
   // initialize to ""
   *date_buf = 0;
   *time_buf = 0;
-  *pdop_buf = 0;
-#endif
-#ifdef SERIAL_TX
   txbuf_head = txbuf_tail = 0; // clear the transmit buffer
-#endif
 
   PMIC.CTRL = PMIC_HILVLEN_bm | PMIC_MEDLVLEN_bm | PMIC_LOLVLEN_bm;
   sei();
 
-#ifdef DEBUG
   tx_pstr(PSTR("\r\n\r\nSTART\r\n"));
 
   tx_pstr(PSTR("SERIAL "));
@@ -770,7 +747,6 @@ void __ATTR_NORETURN__ main() {
   if (reset_status & RST_BORF_bm) tx_pstr(PSTR("RST_BO\r\n"));
   if (reset_status & RST_EXTRF_bm) tx_pstr(PSTR("RST_EXT\r\n"));
   if (reset_status & RST_PORF_bm) tx_pstr(PSTR("RST_PO\r\n"));
-#endif
 
   trim_value = 0;
 
@@ -798,19 +774,16 @@ void __ATTR_NORETURN__ main() {
     if (gps_locked != last_gps_locked) {
       last_gps_locked = gps_locked;
       if (gps_locked) {
-#ifdef DEBUG
         tx_pstr(PSTR("G_LK\r\n"));
-#endif
       } else {
-#ifdef DEBUG
         tx_pstr(PSTR("G_UN\r\n"));
-#endif
         // Whenever the GPS unlocks, back down one PLL time constant step. We don't
 	// attempt to track how long we've held over, but a faster TC means less averaging,
         // which means we'll slew back into correctness faster.
         if (mode > 0) {
           downgrade_mode();
         }
+	PORTD.OUTSET = LED_FIX; // turn on FIX
       }
     }
 
@@ -818,13 +791,9 @@ void __ATTR_NORETURN__ main() {
     if (osc_locked != last_osc_locked) {
       last_osc_locked = osc_locked;
       if (osc_locked) {
-#ifdef DEBUG
         tx_pstr(PSTR("FE_LK\r\n"));
-#endif
       } else {
-#ifdef DEBUG
         tx_pstr(PSTR("FE_UN\r\n"));
-#endif
         writeDacValue(0, 0);
         reset_pll();
       }
@@ -835,9 +804,7 @@ void __ATTR_NORETURN__ main() {
       // The oscillator is now locked, and we're still running from the 32 MHz
       // internal oscillator. Switch over to clocking from the external
       // oscillator.
-#ifdef DEBUG
       tx_pstr(PSTR("\r\nCK_SW\r\n"));
-#endif
       unsigned char tx_buf_empty = 0;
       do {
         ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
@@ -875,9 +842,7 @@ void __ATTR_NORETURN__ main() {
       DFLLRC32M.CTRL &= ~DFLL_ENABLE_bm; //disable the FLL.
       OSC.CTRL &= ~(OSC_RC32KEN_bm | OSC_RC32MEN_bm) ; // disable the 32 MHz and 32 kHz oscillators
 
-#ifdef DEBUG
       tx_pstr(PSTR("CK_OK\r\n\r\n"));
-#endif
       continue;
     }
 
@@ -938,9 +903,7 @@ void __ATTR_NORETURN__ main() {
 #ifdef SW_BIT
     if (check_buttons() && mode == MODE_SLOW && button_blink_time == 0) {
       // Do a non-volatile write and blink the LEDs to celebrate
-#ifdef DEBUG
       tx_pstr(PSTR("\r\nEE_WR\r\n\r\n"));
-#endif
       long dac_value = (long)(DAC_SIGN * trim_value);
       writeDacValue(dac_value, 1);
       button_blink_time = timer_value();
@@ -954,7 +917,6 @@ void __ATTR_NORETURN__ main() {
     if (pps_err_buf[0] == 0) continue;
     last_pps_count = pps_count;
 
-#ifdef DEBUG
     {
       char temp_date_buf[7], temp_time_buf[7];
       ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
@@ -969,13 +931,10 @@ void __ATTR_NORETURN__ main() {
         tx_pstr(PSTR("\r\n"));
       }
     }
-#endif
 
     if (unlocked) {
-#ifdef DEBUG
       // FR - Free Running - GPS or osc is unlocked.
       tx_pstr(PSTR("FR\r\n\r\n"));
-#endif
       pps_err_buf[0] = 0; // clear it out.
       continue;
     }
@@ -987,11 +946,9 @@ void __ATTR_NORETURN__ main() {
         strcpy(temp, (const char*) pps_err_buf); // it's volatile, so make a copy atomically.
         pps_err_buf[0] = 0; // clear it out.
       }
-#ifdef DEBUG
       tx_pstr(PSTR("QE="));
       tx_str(temp);
       tx_pstr(PSTR("\r\n"));
-#endif
       pps_err = atof(temp);
     }
 
@@ -1008,7 +965,6 @@ void __ATTR_NORETURN__ main() {
     long intracycle_delta = pps_cycle_delta - ((long)(seconds_delta * F_CPU));
 
     if (labs(intracycle_delta) / (seconds_delta + 1) > (F_CPU / 10000)) { // this would be an error of 1000 ppm - impossible
-#ifdef DEBUG
       char buf[16];
       // XXI - an erroneous intracycle delta. A delta of more than 100 ppm is reported, but skipped/ignored.
       tx_pstr(PSTR("XXI="));
@@ -1018,20 +974,17 @@ void __ATTR_NORETURN__ main() {
       ltoa(seconds_delta, buf, 10);
       tx_str(buf);
       tx_pstr(PSTR("\r\n\r\n"));
-#endif
       continue;
     }
 
     // If the erroneous delta consists only of whole seconds,
     // then it's a "missed PPS." That's far less serious.
     if (seconds_delta != 0) {
-#ifdef DEBUG
       char buf[10];
       tx_pstr(PSTR("XXS="));
       ltoa(seconds_delta, buf, 10);
       tx_str(buf);
       tx_pstr(PSTR("\r\n\r\n"));
-#endif
     }
 
     unsigned int time_constant = mode_to_tc(mode);
@@ -1055,7 +1008,6 @@ void __ATTR_NORETURN__ main() {
     average_pps_error -= average_pps_error / filter_time;
     average_pps_error += ((double)intracycle_delta) / ((seconds_delta + 1) * filter_time);
 
-#ifdef DEBUG
     {
       char buf[8];
       tx_pstr(PSTR("ADC="));
@@ -1066,7 +1018,6 @@ void __ATTR_NORETURN__ main() {
       tx_str(buf);
       tx_pstr(PSTR("\r\n"));
     }
-#endif
 
     if (mode == MODE_START) {
       // In the startup mode, we try and convert the average cycle delta
@@ -1079,7 +1030,6 @@ void __ATTR_NORETURN__ main() {
 #endif
 
       writeDacValue(dac_value, 0);
-#ifdef DEBUG
       {
         char buf[8];
         tx_pstr(PSTR("SB="));
@@ -1107,7 +1057,6 @@ void __ATTR_NORETURN__ main() {
         tx_str(buf);
         tx_pstr(PSTR("\r\n\r\n"));
       }
-#endif
       // If the average PPS error stays under 25 ppb for a minute, transition out to phase discipline.
       // This used to be 10 ppb, but the PLL tripling that adds some artifical jitter.
       if (fabs(average_pps_error) <= 0.25) {
@@ -1116,9 +1065,7 @@ void __ATTR_NORETURN__ main() {
         if ((++exit_timer >= 60 && fabs(average_phase_error) <= 20.0) || exit_timer >= 600) {
           mode = MODE_FAST;
           exit_timer = 0;
-#ifdef DEBUG
           tx_pstr(PSTR("M_FAST\r\n\r\n"));
-#endif
           continue;
         }
       } else {
@@ -1129,20 +1076,17 @@ void __ATTR_NORETURN__ main() {
 
     // if we somehow get an error of more than 50 ppb, then it's time to start over.
     if (fabs(average_pps_error) >= 0.5) {
-#ifdef DEBUG
       char buf[8];
       tx_pstr(PSTR("PPE="));
       dtostrf(average_pps_error, 7, 2, buf);
       tx_str(buf);
       tx_pstr(PSTR("\r\nM_START\r\n\r\n"));
-#endif
       reset_pll();
       continue;
     }
 
     if (mode != MODE_SLOW) {
       // test for possible upgrade
-#ifdef DEBUG
       {
         char buf[8];
         tx_pstr(PSTR("ET="));
@@ -1150,7 +1094,6 @@ void __ATTR_NORETURN__ main() {
         tx_str(buf);
         tx_pstr(PSTR("\r\n"));
       }
-#endif
       if (fabs(average_phase_error) <= 5.0) {
         // stability has to increase with the square of mode
         if (++exit_timer >= 200 * mode * mode) {
@@ -1160,9 +1103,7 @@ void __ATTR_NORETURN__ main() {
           // translate the iTerm whenever we change the time constant.
           double ratio = ((double)time_constant)/((double)mode_to_tc(mode - 1));
           iTerm *= ratio;
-#ifdef DEBUG
           tx_pstr(PSTR("M_UP\r\n\r\n"));
-#endif
         }
       } else {
         exit_timer = 0;
@@ -1176,12 +1117,9 @@ void __ATTR_NORETURN__ main() {
       } else if (fabs(average_phase_error) >= 50.0 * mode) {
           downgrade_mode();
           time_constant = mode_to_tc(mode);
-#ifdef DEBUG
           tx_pstr(PSTR("M_DN\r\n\r\n"));
-#endif
       }
     }
-#ifdef DEBUG
     {
       char buf[8];
       tx_pstr(PSTR("SB="));
@@ -1198,7 +1136,6 @@ void __ATTR_NORETURN__ main() {
       tx_str(buf);
       tx_pstr(PSTR("\r\n"));
     }
-#endif
 
     double pTerm = average_phase_error * GAIN;
     iTerm += pTerm / (time_constant * DAMPING);
@@ -1220,15 +1157,12 @@ void __ATTR_NORETURN__ main() {
     // some of it to the trim_value.
     double iTerm_modulo = 1000. * time_constant;
     if (fabs(iTerm) > iTerm_modulo) {
-#ifdef DEBUG
         tx_pstr(PSTR("RED\r\n"));
-#endif
         int sign = (iTerm < 0)?-1:1;
         iTerm -= sign * iTerm_modulo;
         trim_value -= sign * 1000;
     }
 
-#ifdef DEBUG
     {
       char buf[8];
       tx_pstr(PSTR("pT="));
@@ -1255,12 +1189,8 @@ void __ATTR_NORETURN__ main() {
       ltoa((long)dac_value, buf, 10);
 #endif
       tx_str(buf);
-      // PDOP = Positional Dilution of Precision - the PDOP value reported by the GPS receiver
-      tx_pstr(PSTR("\r\nPD="));
-      tx_str((const char *)pdop_buf);
       tx_pstr(PSTR("\r\n\r\n"));
       // end of the second.
     }
-#endif
   }
 }
