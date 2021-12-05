@@ -476,9 +476,7 @@ static inline void handleGPS() {
   }
 }
 
-// Optimization beyond O2 turns this into a jump table, which is a step backwards
-// on a Harvard machine.
-static unsigned __attribute__((optimize("O1"))) int mode_to_tc(const unsigned char mode) {
+static unsigned int mode_to_tc(const unsigned char mode) {
   switch(mode) {
     case MODE_START: // FLL mode, but we use fast averaging times
     case MODE_FAST:
