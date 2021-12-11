@@ -47,18 +47,6 @@
 
 #include <util/delay.h>
 
-// Serial port baud rate constants - 9600 baud at 30 MHz.
-#define BSEL_OSC (777)
-#define BSCALE_OSC (-2)
-#ifdef PX1100T
-// 115200 at 30 MHz.
-#define BSEL_GPS (489)
-#define BSCALE_GPS (-5)
-#else
-#define BSEL_GPS BSEL_OSC
-#define BSCALE_GPS BSCALE_OSC
-#endif
-
 /************************************************
  *
  * OPTIONS
@@ -75,6 +63,18 @@
 //#include "fe405b.h"
 //#include "ecoc2522.h"
 //#include "dot050v.h"
+
+// Serial port baud rate constants - 9600 baud at 30 MHz.
+#define BSEL_OSC (777)
+#define BSCALE_OSC (-2)
+#ifdef PX1100T
+// 115200 at 30 MHz.
+#define BSEL_GPS (489)
+#define BSCALE_GPS (-5)
+#else
+#define BSEL_GPS BSEL_OSC
+#define BSCALE_GPS BSCALE_OSC
+#endif
 
 // The include files define SPI_DAC (or not), AD5680 (or not), GAIN, TC_FAST, TC_SLOW and optionally TC_MED
 
